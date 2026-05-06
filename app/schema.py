@@ -2,48 +2,128 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ItemObs(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    item_number: str | None
-    item_title: str | None
-    item_quantity_text: str | None
-    item_line_total_text: str | None
+    item_number: str | None = Field(
+        description="Внутренний eBay item id (обычно ~12 цифр), если виден."
+    )
+    item_title: str | None = Field(
+        description="Полный заголовок позиции, без сокращений."
+    )
+    item_quantity_text: str | None = Field(
+        description="Количество как сырой текст ровно так, как видно."
+    )
+    item_line_total_text: str | None = Field(
+        description="Итог по строке позиции (цена × количество) с валютой, как видно."
+    )
 
 
 class RefundObs(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    refund_amount_text: str | None
-    refund_date_text: str | None
-    refund_note: str | None
+    refund_amount_text: str | None = Field(
+        description="Сумма возврата с валютой как сырой текст."
+    )
+    refund_date_text: str | None = Field(
+        description="Дата возврата как сырой текст."
+    )
+    refund_note: str | None = Field(
+        description="Короткая подпись или причина рядом с возвратом, если есть."
+    )
 
 
 class Observed(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    order_number: str | None
-    ordered_at_text: str | None
-    sold_by: str | None
-    order_total_text: str | None
-    item_subtotal_text: str | None
-    shipping_text: str | None
-    sales_tax_text: str | None
-    delivery_status: str | None
-    delivered_date_text: str | None
-    arriving_by_date: str | None
-    shipping_service: str | None
-    tracking_numbers: list[str]
-    items: list[ItemObs]
-    refunds: list[RefundObs]
+    order_number: str | None = Field(
+        description=(
+            "Номер заказа eBay в формате NN-NNNNN-NNNNN (например, "
+            "12-12345-67890). Обычно подписан «Order number» в шапке деталей."
+        )
+    )
+    ordered_at_text: str | None = Field(
+        description=(
+            "Дата размещения заказа («Order placed», «Order date», «Ordered "
+            "on», «Time placed») как сырой текст."
+        )
+    )
+    sold_by: str | None = Field(
+        description="Username продавца ровно так, как написано в блоке «Sold by»."
+    )
+    order_total_text: str | None = Field(
+        description="Строка «Order total» с валютой, как видно."
+    )
+    item_subtotal_text: str | None = Field(
+        description=(
+            "Строка «Item subtotal» / «Subtotal» с валютой — сумма позиций "
+            "до доставки и налога."
+        )
+    )
+    shipping_text: str | None = Field(
+        description="Строка «Shipping» (например, '$9.95' или 'Free')."
+    )
+    sales_tax_text: str | None = Field(
+        description="Строка «Sales tax» / «Tax» с валютой."
+    )
+    delivery_status: str | None = Field(
+        description=(
+            "Короткий статус доставки одной фразой («Delivered», «Arriving», "
+            "«Shipped», «In transit», «Cancelled», «Refunded»). Без дат — "
+            "даты идут в delivered_date_text и arriving_by_date."
+        )
+    )
+    delivered_date_text: str | None = Field(
+        description=(
+            "Фактическая дата доставки, если заказ доставлен. Иначе null."
+        )
+    )
+    arriving_by_date: str | None = Field(
+        description=(
+            "Ожидаемая дата прибытия для ещё не доставленных заказов "
+            "(«Arriving by …», «Estimated delivery …»). Для уже доставленных — null."
+        )
+    )
+    shipping_service: str | None = Field(
+        description=(
+            "Название перевозчика или сервиса как написано на странице "
+            "(«USPS Ground Advantage», «FedEx Home Delivery», «UPS Ground»)."
+        )
+    )
+    tracking_numbers: list[str] = Field(
+        description=(
+            "Массив всех видимых трек-номеров: только сами номера, без "
+            "меток перевозчика, без повторов."
+        )
+    )
+    items: list[ItemObs] = Field(
+        description="Массив позиций заказа, по одной записи на каждую позицию."
+    )
+    refunds: list[RefundObs] = Field(
+        description="Массив возвратов, по одной записи на каждый отдельный возврат."
+    )
 
 
 class RawOcrPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    is_order_details: bool | None
-    visible_text: str
+    is_order_details: bool | None = Field(
+        description="true, если на скриншоте — страница деталей одного eBay-заказа; иначе false."
+    )
+    visible_text: str = Field(
+        description=(
+            "Весь читаемый текст страницы целиком, в естественном порядке "
+            "чтения. Если текста нет — пустая строка."
+        )
+    )
     observed: Observed
-    unreadable: list[str]
+    unreadable: list[str] = Field(
+        description=(
+            "Список коротких заметок о фрагментах, которые реально "
+            "присутствуют на пикселях, но не получилось разобрать (блюр, "
+            "блик, обрезано). Не перечисляй здесь поля, которых на "
+            "скриншоте просто нет — их значение должно быть null."
+        )
+    )
 
 
 class UploadResultItem(BaseModel):
