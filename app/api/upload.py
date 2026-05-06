@@ -30,6 +30,20 @@ async def upload(request: Request, files: list[UploadFile]) -> list[UploadResult
                 mime,
                 len(data),
             )
+            if inserted is None:
+                await conn.execute(
+                    """
+                    UPDATE screenshots
+                       SET agent_status = 'pending',
+                           ocr_status = CASE
+                               WHEN ocr_status = 'failed' THEN 'pending'::ocr_status_t
+                               ELSE ocr_status
+                           END,
+                           error_text = NULL
+                     WHERE sha256 = $1
+                    """,
+                    sha,
+                )
             out.append(
                 UploadResultItem(sha256=sha, is_new=inserted is not None, byte_size=len(data))
             )

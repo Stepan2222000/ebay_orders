@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 node_modules/
 .venv/
+.pytest_cache/
 
 # Local screenshot corpora (contain real eBay order data)
 last_photos/
@@ -13,3 +14,9 @@ test_photos/
 .claude/
 .codex/
 .txt
+
+# Local run artifacts
+backups/
+dogfood-output/
+logs/
+app/stage_b/image.png

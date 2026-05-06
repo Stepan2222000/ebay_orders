@@ -5,8 +5,10 @@ import logging
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app import db
+from app.api import chat as chat_api
 from app.api import upload
 from app.config import settings
 from app.ocr_client import OcrClient
@@ -48,7 +50,19 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3100",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3100",
+    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(upload.router)
+app.include_router(chat_api.router)
 
 
 @app.get("/healthz")

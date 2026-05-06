@@ -1,0 +1,172 @@
+/* ============================================================
+   Warm Editorial Design System — colors_and_type.css
+   Tokens for both surfaces:
+     • Marketing  → cream canvas, coral CTAs, serif display
+     • Product    → dark navy slate, white type, coral primary
+   ============================================================ */
+
+/* -- Web fonts -----------------------------------------------
+   Public Google Fonts substitutions:
+     • Display serif  → Fraunces
+     • Sans / UI      → Inter
+     • Code           → JetBrains Mono
+   ------------------------------------------------------------ */
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+:root {
+  /* ---------- Brand color (the coral, the one signature) ---------- */
+  --brand-coral:           #cc785c;   /* primary CTA */
+  --brand-coral-active:    #a9583e;   /* press */
+  --brand-coral-hover:     #b8684e;
+  --brand-coral-disabled:  #e6dfd8;
+  --brand-coral-soft:      rgba(204,120,92,0.12);
+
+  /* ---------- Cream / marketing surfaces ---------- */
+  --cream-canvas:          #faf9f5;   /* default body */
+  --cream-soft:            #f5f0e8;
+  --cream-card:            #efe9de;
+  --cream-strong:          #e8e0d2;
+  --cream-hairline:        #e6dfd8;
+  --cream-hairline-soft:   #ebe6df;
+
+  /* ---------- Dark / product surfaces ---------- */
+  --slate-900:             #181715;   /* primary dark surface */
+  --slate-850:             #1f1e1b;
+  --slate-800:             #252320;   /* elevated dark */
+  --slate-750:             #2b2a27;
+  --slate-700:             #34332f;
+  --slate-600:             #404040;   /* matches figma rgb(64,64,62) */
+  --slate-500:             #666663;
+  --slate-400:             #91918d;
+  --slate-300:             #bfbfba;
+  --slate-200:             #cecdc5;
+  --slate-100:             #ebdbbc;   /* manilla */
+  --slate-50:              #faf9f5;
+
+  /* Direct figma values (raw — for product UI parity) */
+  --product-bg:            #262625;   /* rgb(38,38,37) page bg */
+  --product-sidebar:       #22211d;   /* rgb(34,33,29) sidebar */
+  --product-input:         #282624;   /* rgb(40,38,36) composer */
+  --product-input-border:  #393831;   /* rgb(57,56,49) */
+  --product-stroke:        #373632;   /* hairline on dark */
+  --product-stroke-soft:   rgba(255,255,255,0.08);
+  --product-overlay:       rgba(255,255,255,0.05);
+
+  /* ---------- Typography colors ---------- */
+  --ink:                   #141413;
+  --body-strong:           #252523;
+  --body:                  #3d3d3a;
+  --muted:                 #6c6a64;
+  --muted-soft:            #8e8b82;
+  --on-primary:            #ffffff;
+  --on-dark:               #faf9f5;
+  --on-dark-strong:        #ffffff;
+  --on-dark-soft:          rgba(255,255,255,0.6);  /* matches "0.6" alpha pattern in figma */
+  --on-dark-faint:         rgba(255,255,255,0.4);
+
+  /* ---------- Semantic ---------- */
+  --success:               #5db872;
+  --warning:               #d4a017;
+  --error:                 #c64545;
+  --error-product:         #bf4d43;   /* figma error color */
+  --info:                  #207fde;   /* figma blue, used for focus + checkboxes */
+  --info-soft:             rgba(32,127,222,0.08);
+  --accent-purple:         #9b87f5;   /* "Professional Plan" chip */
+  --accent-purple-deep:    #6c5bb9;
+  --accent-teal:           #5db8a6;
+  --accent-amber:          #e8a55a;
+
+  /* ---------- Type scale ---------- */
+  --font-serif:    "Fraunces", Georgia, serif;
+  --font-sans:     "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono:     "JetBrains Mono", "Fira Code", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Display (serif) */
+  --display-xl-size: 64px;   --display-xl-lh: 1.05;  --display-xl-track: -1.5px;
+  --display-lg-size: 48px;   --display-lg-lh: 1.10;  --display-lg-track: -1.0px;
+  --display-md-size: 36px;   --display-md-lh: 1.15;  --display-md-track: -0.5px;
+  --display-sm-size: 28px;   --display-sm-lh: 1.20;  --display-sm-track: -0.3px;
+
+  /* Title / sans */
+  --title-lg-size: 22px;
+  --title-md-size: 18px;
+  --title-sm-size: 16px;
+
+  /* Body */
+  --body-md-size: 16px;
+  --body-sm-size: 14px;
+  --body-xs-size: 13px;
+  --caption-size: 12px;
+
+  /* ---------- Radii ---------- */
+  --radius-xs:   4px;
+  --radius-sm:   6px;
+  --radius-md:   8px;
+  --radius-lg:   12px;
+  --radius-xl:   16px;
+  --radius-2xl:  24px;
+  --radius-pill: 9999px;
+
+  /* ---------- Spacing (4-base) ---------- */
+  --sp-xxs:  4px;
+  --sp-xs:   8px;
+  --sp-sm:   12px;
+  --sp-md:   16px;
+  --sp-lg:   24px;
+  --sp-xl:   32px;
+  --sp-2xl:  48px;
+  --sp-3xl:  64px;
+  --sp-section: 96px;
+
+  /* ---------- Elevation (rare in this system) ---------- */
+  --shadow-1: 0 1px 3px rgba(20,20,19,0.08);
+  --shadow-2: 0 4px 12px rgba(20,20,19,0.10);
+  --shadow-product: -1px 1px 4px rgba(0,0,0,0.25);
+  --shadow-coral-inset: inset 0 1.5px 0 rgba(186,111,48,0.5);
+  --shadow-popover: 0 4px 4px rgba(0,0,0,0.25);
+}
+
+/* ============================================================
+   Semantic role classes — apply to elements directly
+   ============================================================ */
+
+/* Display (serif) */
+.h-display-xl, .display-xl { font-family: var(--font-serif); font-weight: 400; font-size: var(--display-xl-size); line-height: var(--display-xl-lh); letter-spacing: var(--display-xl-track); color: var(--ink); }
+.h-display-lg, .display-lg { font-family: var(--font-serif); font-weight: 400; font-size: var(--display-lg-size); line-height: var(--display-lg-lh); letter-spacing: var(--display-lg-track); color: var(--ink); }
+.h-display-md, .display-md { font-family: var(--font-serif); font-weight: 400; font-size: var(--display-md-size); line-height: var(--display-md-lh); letter-spacing: var(--display-md-track); color: var(--ink); }
+.h-display-sm, .display-sm { font-family: var(--font-serif); font-weight: 400; font-size: var(--display-sm-size); line-height: var(--display-sm-lh); letter-spacing: var(--display-sm-track); color: var(--ink); }
+
+/* Sans titles */
+.h-title-lg, .title-lg { font-family: var(--font-sans); font-weight: 500; font-size: var(--title-lg-size); line-height: 1.3; color: var(--ink); }
+.h-title-md, .title-md { font-family: var(--font-sans); font-weight: 500; font-size: var(--title-md-size); line-height: 1.4; color: var(--ink); }
+.h-title-sm, .title-sm { font-family: var(--font-sans); font-weight: 500; font-size: var(--title-sm-size); line-height: 1.4; color: var(--ink); }
+
+/* Body */
+.body-md, p { font-family: var(--font-sans); font-weight: 400; font-size: var(--body-md-size); line-height: 1.55; color: var(--body); }
+.body-sm { font-family: var(--font-sans); font-weight: 400; font-size: var(--body-sm-size); line-height: 1.55; color: var(--body); }
+.body-xs { font-family: var(--font-sans); font-weight: 400; font-size: var(--body-xs-size); line-height: 1.5; color: var(--body); }
+
+/* Caption + uppercase */
+.caption { font-family: var(--font-sans); font-weight: 500; font-size: var(--body-xs-size); line-height: 1.4; color: var(--muted); }
+.caption-up { font-family: var(--font-sans); font-weight: 500; font-size: var(--caption-size); line-height: 1.4; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted); }
+
+/* Code */
+code, .code, pre { font-family: var(--font-mono); font-weight: 400; font-size: var(--body-sm-size); line-height: 1.6; }
+
+/* ============================================================
+   Utility surface classes
+   ============================================================ */
+.surface-cream    { background: var(--cream-canvas); color: var(--ink); }
+.surface-cream-card { background: var(--cream-card); color: var(--ink); }
+.surface-dark     { background: var(--product-bg); color: var(--on-dark); }
+.surface-dark-deep { background: var(--slate-900); color: var(--on-dark); }
+.surface-sidebar  { background: var(--product-sidebar); color: var(--on-dark); }
+
+/* Default body baseline (consumers can override) */
+html, body {
+  font-family: var(--font-sans);
+  color: var(--body);
+  background: var(--cream-canvas);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}

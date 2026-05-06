@@ -6,3 +6,6 @@ pydantic==2.12.5
 pydantic-settings==2.7.1
 python-dotenv==1.0.1
 python-multipart==0.0.18
+pglast==7.13
+pytest==9.0.3
+httpx==0.28.1
