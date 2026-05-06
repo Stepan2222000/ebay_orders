@@ -1,0 +1,15 @@
+.env
+.DS_Store
+__pycache__/
+*.pyc
+node_modules/
+.venv/
+
+# Local screenshot corpora (contain real eBay order data)
+last_photos/
+test_photos/
+
+# Local agent tooling
+.claude/
+.codex/
+.txt
