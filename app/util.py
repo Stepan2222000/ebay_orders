@@ -13,7 +13,7 @@ def detect_mime(data: bytes) -> str | None:
     for prefix, mime in _PREFIXES:
         if data.startswith(prefix):
             return mime
-    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "image/webp"
     return None
 

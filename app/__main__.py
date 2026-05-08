@@ -15,11 +15,12 @@ USAGE = "usage: python -m app {api|worker|ocr-one <file>}"
 
 
 async def _ocr_one(path: str) -> int:
-    if not os.path.exists(path):
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except FileNotFoundError:
         print(f"file not found: {path}", file=sys.stderr)
         return 2
-    with open(path, "rb") as f:
-        data = f.read()
     mime = detect_mime(data)
     if mime is None:
         print(f"{path}: not png/jpeg/webp/gif", file=sys.stderr)
