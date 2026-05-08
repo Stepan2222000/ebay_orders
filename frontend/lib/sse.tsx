@@ -2,20 +2,15 @@
 /**
  * Общий EventSource через Context + ref-count.
  *
- * Зачем: компоненты ConnectionBanner / StatsRow / AssemblingIndicator / ChatPane
- * раньше каждый сам открывал new EventSource('/api/status/stream'). Браузер
- * держит лимит 6 HTTP/1.1 socket'ов на origin (Chromium kMaxSocketsPerGroup=6),
- * и одинаковые URL не коалесцируются. С 4 одинаковыми подписками + 1 на
- * /api/chat/stream + HMR EventSource Next.js дев-сервера пул забит — fetch'ы
- * стопорятся в Stalled, UI зависает до hard reload.
+ * Несколько компонентов (счётчики, баннер связи, прогресс агента) подписываются
+ * на один и тот же `/api/status/stream`. Чтобы не открывать на каждый компонент
+ * свой EventSource (браузер держит лимит ~6 HTTP/1.1 сокетов на origin),
+ * экземпляр на (url) хранится в Map с ref-count и закрывается, когда последний
+ * подписчик ушёл.
  *
- * Решение по паттерну remix-utils useEventSource: один EventSource на (url),
- * Map с ref-count, при count=0 — закрываем. Несколько компонентов делят сокет.
- *
- * Watchdog: бэк шлёт `data: {_heartbeat:true}` каждые ~15с (см. app/listener.py).
+ * Watchdog: бэк шлёт data-heartbeat каждые ~15с (см. app/listener.py).
  * Если за 60с ни одного события — считаем коннект мёртвым (Safari/iOS background
- * suspend без onerror — известный кейс), close()+reconnect, переприсвоить
- * handlers новому source.
+ * suspend без onerror), пересоздаём EventSource и переподписываем handlers.
  */
 import {
   createContext,
