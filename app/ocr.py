@@ -30,7 +30,7 @@ class OcrResult:
 def _payload(image_bytes: bytes, mime: str) -> dict:
     data_url = f"data:{mime};base64,{base64.b64encode(image_bytes).decode('ascii')}"
     return {
-        "model": settings.openrouter_model,
+        "model": settings.openrouter_model_a,
         "max_tokens": settings.openrouter_max_tokens,
         "reasoning": {"enabled": False},
         "provider": {"ignore": list(settings.openrouter_ignore_providers)},
@@ -80,7 +80,7 @@ async def transcribe(image_bytes: bytes, mime: str, http: httpx.AsyncClient) -> 
 
     return OcrResult(
         raw_json=parsed,
-        model=data.get("model", settings.openrouter_model),
+        model=data.get("model", settings.openrouter_model_a),
         cost_usd=(data.get("usage") or {}).get("cost"),
         latency_s=time.monotonic() - t0,
     )

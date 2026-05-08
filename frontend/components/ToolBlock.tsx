@@ -1,7 +1,13 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronRight, Sparkles } from "lucide-react";
 import styles from "./ToolBlock.module.css";
+
+// Время от перехода state → 'output-available'/'output-error' до автоматического
+// сворачивания блока. По SPEC ^действия: блок раскрыт пока действие идёт, после —
+// сворачивается, но раскрываемо. Если пользователь сам открыл/закрыл —
+// уважаем его решение.
+const AUTO_COLLAPSE_MS = 5000;
 
 type ToolState =
   | "input-streaming"
@@ -49,6 +55,21 @@ export default function ToolBlock({
     state === "output-error" ||
     (output && typeof output === "object" && "error" in output);
   const [open, setOpen] = useState(defaultOpen || !finished);
+  const userToggled = useRef(false);
+
+  // Авто-сворачивание после завершения. Если юзер уже трогал — не трогаем.
+  useEffect(() => {
+    if (!finished || userToggled.current) return;
+    const t = setTimeout(() => {
+      if (!userToggled.current) setOpen(false);
+    }, AUTO_COLLAPSE_MS);
+    return () => clearTimeout(t);
+  }, [finished]);
+
+  const handleToggle = () => {
+    userToggled.current = true;
+    setOpen((v) => !v);
+  };
 
   const label = TOOL_LABEL[toolName] ?? toolName;
   const stateLabel = errored
@@ -65,7 +86,7 @@ export default function ToolBlock({
       <button
         type="button"
         className={styles.head}
-        onClick={() => setOpen((v) => !v)}
+        onClick={handleToggle}
         aria-expanded={open}
       >
         <span className={`${styles.icon} ${!finished ? styles.iconLive : ""}`}>

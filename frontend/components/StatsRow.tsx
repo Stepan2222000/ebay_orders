@@ -21,6 +21,8 @@ export default function StatsRow({ onChange }: { onChange?: (s: Stats) => void }
     done: 0,
     failed: 0,
     assembling: 0,
+    agent_active: false,
+    agent_thinking: false,
   });
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;

@@ -1,6 +1,12 @@
-"""FastAPI: приём скриншотов в очередь стадии A + чат стадии B + сайдбар."""
+"""FastAPI: приём скриншотов в очередь стадии A + чат стадии B + сайдбар.
+
+Архитектура: один диспетчер агента живёт в воркере. API-handler /chat/messages —
+тонкий: записывает user-message в БД, ставит stop_requested для активной сессии
+(автоматический Stop при Send), возвращает 200 OK. Воркер по NOTIFY
+'user_message_arrived' просыпается и стримит ответ в parts assistant-message.
+Фронт получает обновления через /api/chat/stream (SSE snapshot по chat_changed).
+"""
 import asyncio
-import base64
 import json
 from contextlib import asynccontextmanager
 
@@ -10,10 +16,8 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 
-from .agent import event_to_part, run_agent_session
 from .config import settings
 from .db import close, pool
-from .stream import SSE_HEADERS, encode_ui_message_stream
 from .util import detect_mime, sha256
 
 
@@ -45,26 +49,32 @@ app.add_middleware(
 api = APIRouter(prefix="/api")
 
 
-# ─── Sidebar: статус транскрибации ─────────────────────────────────────────
+# ─── Sidebar: статус транскрибации + состояние агента ──────────────────────
 
 _STATUS_SQL = (
     "SELECT ocr_status::text AS s, count(*)::int AS n "
     "FROM screenshots GROUP BY ocr_status"
 )
-# Снимок считается «в сборке агентом» от момента когда OCR закрыл его
-# до момента когда стадия B либо привязала к заказу (agent_status='done'),
-# либо явно отметила как failed.
 _ASSEMBLING_SQL = (
     "SELECT count(*)::int FROM screenshots "
     "WHERE ocr_status='done' AND agent_status IN ('pending','running')"
 )
+_AGENT_STATE_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM agent_run WHERE finished_at IS NULL) AS active, "
+    "       COALESCE((SELECT thinking FROM agent_run "
+    "                  WHERE finished_at IS NULL ORDER BY run_id DESC LIMIT 1), false) AS thinking"
+)
 
 
-async def _status_dict(conn: asyncpg.Connection) -> dict[str, int]:
-    out = {"pending": 0, "running": 0, "done": 0, "failed": 0, "assembling": 0}
+async def _status_dict(conn: asyncpg.Connection) -> dict[str, object]:
+    out: dict[str, object] = {"pending": 0, "running": 0, "done": 0, "failed": 0,
+                              "assembling": 0, "agent_active": False, "agent_thinking": False}
     for r in await conn.fetch(_STATUS_SQL):
         out[r["s"]] = r["n"]
     out["assembling"] = await conn.fetchval(_ASSEMBLING_SQL) or 0
+    state = await conn.fetchrow(_AGENT_STATE_SQL)
+    out["agent_active"] = bool(state["active"])
+    out["agent_thinking"] = bool(state["thinking"])
     return out
 
 
@@ -76,10 +86,9 @@ async def status():
 
 @api.get("/status/stream")
 async def status_stream(request: Request):
-    """SSE: текущие counts → подписка на NOTIFY status_changed → пуш на каждое."""
+    """SSE: counts + agent state. Подписан на status_changed и agent_state."""
 
     async def gen():
-        # выделенное соединение, чтобы LISTEN не держал слот пула
         conn = await asyncpg.connect(
             host=settings.pg_host,
             port=settings.pg_port,
@@ -94,15 +103,14 @@ async def status_stream(request: Request):
 
         try:
             await conn.add_listener("status_changed", on_notify)
+            await conn.add_listener("agent_state", on_notify)
             yield f"data: {json.dumps(await _status_dict(conn))}\n\n"
             while True:
                 try:
                     await asyncio.wait_for(queue.get(), timeout=15.0)
                 except asyncio.TimeoutError:
-                    # keepalive + раннее обнаружение disconnect: write упадёт
                     yield ": ping\n\n"
                     continue
-                # пакетим всплеск нотификаций в один push
                 while not queue.empty():
                     queue.get_nowait()
                 yield f"data: {json.dumps(await _status_dict(conn))}\n\n"
@@ -245,103 +253,69 @@ async def screenshot_delete(sha: str):
 # ─── Stage B: чат ───────────────────────────────────────────────────────────
 
 
-def _decode_data_url(url: str) -> bytes | None:
-    if not url.startswith("data:"):
-        return None
-    try:
-        _, b64 = url.split(",", 1)
-        return base64.b64decode(b64)
-    except Exception:
-        return None
-
-
-def _extract_last_user_message(messages: list[dict]) -> tuple[str, list[tuple[bytes, str]], list[dict]]:
-    """Берём последнее user-сообщение из UIMessage[] и достаём text + files.
-
-    Возвращаем (text, files, parts_for_db).
-    """
+def _extract_user_parts(messages: list[dict]) -> list[dict]:
+    """Берём последнее user-сообщение из UIMessage[] и переводим в БД-формат."""
     last_user = next((m for m in reversed(messages) if m.get("role") == "user"), None)
     if last_user is None:
         raise HTTPException(400, "нет user-сообщения в запросе")
 
-    text_chunks: list[str] = []
-    files: list[tuple[bytes, str]] = []
     parts: list[dict] = []
-
     for part in last_user.get("parts") or []:
         pt = part.get("type")
         if pt == "text":
             t = part.get("text", "")
             if t:
-                text_chunks.append(t)
                 parts.append({"type": "text", "text": t})
         elif pt == "file":
             url = part.get("url") or ""
-            media = part.get("mediaType") or ""
-            data = _decode_data_url(url)
-            if data is None:
+            mime = part.get("mediaType") or "application/octet-stream"
+            if not url:
                 continue
-            if len(data) > settings.max_screenshot_bytes:
-                raise HTTPException(413, "файл больше 10 МБ")
-            mime = detect_mime(data) or media or "application/octet-stream"
-            files.append((data, mime))
             parts.append({"type": "file", "mime": mime, "data_url": url})
 
     if not parts:
         raise HTTPException(400, "пустое сообщение")
-    text = "\n".join(text_chunks) or None
-    return text, files, parts
+    return parts
 
 
 @api.post("/chat/messages")
 async def post_chat_message(req: Request):
+    """Тонкий handler: пишет user-message и ставит автостоп текущему агенту.
+
+    Сам ответ агента стримит воркер: по триггеру user_message_arrived создаст
+    agent_run и assistant chat_message, прокрутит сессию, parts появятся
+    у фронта через /api/chat/stream snapshot. Этот endpoint не возвращает
+    стрим — useChat считает запрос завершённым и переключится в idle.
+    """
     body = await req.json()
-    user_text, user_files, user_parts = _extract_last_user_message(body.get("messages") or [])
+    user_parts = _extract_user_parts(body.get("messages") or [])
 
     p = await pool()
-    await p.execute(
-        "INSERT INTO chat_messages(session_id, role, parts) VALUES ('default', 'user', $1)",
-        user_parts,
+    async with p.acquire() as conn:
+        async with conn.transaction():
+            # Автостоп активной сессии — она аккуратно завершится с пометкой
+            # «прервано» и воркер тут же стартует новую с нашим user-message.
+            await conn.execute(
+                "UPDATE agent_run SET stop_requested=true WHERE finished_at IS NULL"
+            )
+            await conn.execute(
+                "INSERT INTO chat_messages(session_id, role, parts) "
+                "VALUES ('default', 'user', $1)",
+                user_parts,
+            )
+    return {"ok": True}
+
+
+@api.post("/agent/stop")
+async def agent_stop():
+    """Запрос на прерывание текущей агентской сессии."""
+    n = await (await pool()).fetchval(
+        "WITH u AS ("
+        " UPDATE agent_run SET stop_requested=true "
+        "  WHERE finished_at IS NULL AND stop_requested=false RETURNING 1"
+        ") SELECT count(*) FROM u"
     )
-
-    accumulated_parts: list[dict] = []
-    aborted = {"value": False}
-
-    async def collect_then_pass(events):
-        async for ev in events:
-            piece = event_to_part(ev)
-            if piece is not None:
-                accumulated_parts.append(piece)
-            yield ev
-
-    raw_events = run_agent_session(
-        p, app.state.http,
-        user_text=user_text, user_files=user_files,
-    )
-    sse_chunks = encode_ui_message_stream(collect_then_pass(raw_events))
-
-    async def finalize():
-        try:
-            async for chunk in sse_chunks:
-                yield chunk
-        except asyncio.CancelledError:
-            aborted["value"] = True
-            raise
-        finally:
-            saved = list(accumulated_parts)
-            if aborted["value"]:
-                saved.append({"type": "text", "text": "(прервано)"})
-            if saved:
-                try:
-                    await p.execute(
-                        "INSERT INTO chat_messages(session_id, role, parts) "
-                        "VALUES ('default', 'assistant', $1)",
-                        saved,
-                    )
-                except Exception:
-                    pass  # БД могла отвалиться вместе с client'ом — не маскируем абсолютно, но и не падаем здесь
-
-    return StreamingResponse(finalize(), headers=SSE_HEADERS)
+    return {"stopped": int(n or 0)}
 
 
 _CHAT_HISTORY_SQL = (

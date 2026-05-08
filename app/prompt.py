@@ -1,4 +1,5 @@
 """Системные промпты. Единственное место в коде, где они живут."""
+import json
 
 # ─── Стадия A: распознавание одного снимка ─────────────────────────────────
 
@@ -34,17 +35,25 @@ _STAGE_B_BASE = """\
 Отвечай по-русски, кратко и по существу.
 
 # Что делать
-- Если есть распознанные скриншоты в разделе «Pending снимки» ниже — собери из них
-  заказы и сохрани через инструмент save_order. По одному вызову на каждый отдельный заказ.
-- Если пользователь спрашивает по сохранённым заказам — отвечай текстом, при необходимости
-  читая базу через sql.
+- Если есть распознанные скриншоты в разделе «Pending снимки» ниже — **сразу**
+  сохраняй их через save_order, по одному вызову на каждый отдельный заказ.
+  Полные observed-данные уже даны прямо в этом промпте — НЕ запрашивай их через
+  SELECT raw_json, не делай sanity-COUNT'ов «посмотреть сколько pending». Пустую
+  работу не делаем: один цикл агента — это N×save_order и в исключениях
+  UPDATE failed для невалидных снимков.
+- Если пользователь спрашивает по сохранённым заказам — отвечай текстом,
+  при необходимости читая базу через sql.
 - Если пользователь явно просит изменить или удалить заказ — делай это через sql.
 - Если пользователь прикрепил фото в сообщение — оно для разговора (а не для сохранения),
   отвечай по нему текстом, в чистовой слой ничего не пиши.
 
 # Принципы
 - Никогда ничего не выдумывай. Если данных недостаточно — задай короткий вопрос.
-- Не пересчитывай валюту, не реформатируй даты. Если не уверен в формате — ставь null.
+- Поля сумм и дат клади в save_order **как видишь в observed** (например
+  ordered_at: "May 3, 2026 at 4:23 PM", item_subtotal_usd: "$70.00",
+  shipping_usd: "Free", delivered_date: "Thu, May 7"). Серверный normalizer
+  сам разберёт строки в типы.
+- Если поля совсем нет в observed — null.
 - Пустые значения не затирают заполненные. save_order сам это учитывает.
 - На любую ошибку пиши пользователю по-человечески, без сырого JSON и SQL.
 
@@ -98,28 +107,22 @@ raw_ocr(sha256 PRIMARY KEY → screenshots, model, raw_json jsonb, ocr_at)
 chat_sessions(session_id text PRIMARY KEY DEFAULT 'default')
 chat_messages(message_id, session_id, role, parts jsonb, created_at)
 order_change_log(id, table_name, op, source change_source, ts, old_row jsonb, new_row jsonb)
-
-# Чтение полного raw_json по снимку
-SELECT raw_json FROM raw_ocr WHERE sha256 = decode('<hex>', 'hex');
 """
 
 
 def build_stage_b_system(pending: list[dict]) -> str:
-    """Складывает фиксированную часть с динамическим списком pending снимков."""
+    """Складывает фиксированную часть с динамическим списком pending снимков.
+
+    По каждому pending кладём полный observed целиком — агент видит реальные
+    item_number/title/суммы и не выдумывает их. Это снимает необходимость в
+    дополнительных SELECT raw_json round-trip'ах.
+    """
     if not pending:
         return _STAGE_B_BASE + "\n# Pending снимков нет.\n"
-    lines = ["", f"# Pending снимков: {len(pending)}"]
+    lines = ["", f"# Pending снимков: {len(pending)}",
+             "Полный observed по каждому (sha — decode'нуть в bytea для screenshot_shas):"]
     for s in pending:
-        obs = s.get("observed") or {}
-        items = obs.get("items") or []
-        tracks = obs.get("tracking_numbers") or []
-        lines.append(
-            f"- sha={s['sha']} order={obs.get('order_number')} "
-            f"sold_by={obs.get('sold_by')} total={obs.get('order_total_text')} "
-            f"items={len(items)} tracks={len(tracks)}"
-        )
-    lines.append(
-        "\nЗа подробностями по любому снимку: "
-        "SELECT raw_json FROM raw_ocr WHERE sha256 = decode('<hex>','hex');"
-    )
+        observed = s.get("observed") or {}
+        compact = json.dumps(observed, ensure_ascii=False, separators=(",", ":"))
+        lines.append(f'- sha={s["sha"]}: {compact}')
     return _STAGE_B_BASE + "\n".join(lines)

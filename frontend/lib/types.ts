@@ -8,6 +8,10 @@ export interface Stats {
   failed: number;
   /** скриншоты с ocr_status=done и agent_status в работе/ожидании (агент сейчас собирает заказы) */
   assembling: number;
+  /** есть ли активная агентская сессия (agent_run.finished_at IS NULL) */
+  agent_active: boolean;
+  /** идёт ли сейчас LLM-вызов внутри активной сессии */
+  agent_thinking: boolean;
 }
 
 export interface Screenshot {

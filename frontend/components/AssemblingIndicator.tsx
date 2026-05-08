@@ -5,8 +5,14 @@ import { API } from "@/lib/api";
 import type { Stats } from "@/lib/types";
 import styles from "./AssemblingIndicator.module.css";
 
+// Pill в шапке чата. Источник — /api/status/stream payload (поля
+// agent_active + agent_thinking). Виден пока крутится агентская сессия;
+// текст меняется в зависимости от того, идёт ли сейчас LLM-вызов или
+// выполняется tool. Один компонент, один источник правды.
+
 export default function AssemblingIndicator() {
-  const [n, setN] = useState(0);
+  const [active, setActive] = useState(false);
+  const [thinking, setThinking] = useState(false);
 
   useEffect(() => {
     let stopped = false;
@@ -19,7 +25,8 @@ export default function AssemblingIndicator() {
       es.onmessage = (e) => {
         try {
           const s = JSON.parse(e.data) as Stats;
-          setN(s.assembling || 0);
+          setActive(!!s.agent_active);
+          setThinking(!!s.agent_thinking);
           backoff = 1000;
         } catch {}
       };
@@ -37,14 +44,14 @@ export default function AssemblingIndicator() {
     };
   }, []);
 
-  if (n <= 0) return null;
+  if (!active) return null;
 
   return (
-    <span className={styles.pill} data-testid="assembling-indicator" data-count={n}>
+    <span className={styles.pill} data-testid="assembling-indicator" data-thinking={thinking}>
       <span className={styles.spark}>
         <Sparkles size={12} />
       </span>
-      агент собирает заказы…
+      {thinking ? "агент думает…" : "агент работает…"}
     </span>
   );
 }

@@ -4,6 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import type { UIMessage } from "ai";
 import { API, resetChat as resetChatApi } from "@/lib/api";
+import type { Stats } from "@/lib/types";
 import AssemblingIndicator from "./AssemblingIndicator";
 import ConfirmDialog from "./ConfirmDialog";
 import Composer from "./Composer";
@@ -23,7 +24,12 @@ function persistedPartToUIPart(p: any, idx: number): any {
   if (p.type === "file") {
     return { type: "file", mediaType: p.mime, url: p.data_url };
   }
-  if (p.type === "tool") {
+  // Уже AI SDK-формат: tool-NAME с toolCallId/state/input/output — пропускаем как есть.
+  if (typeof p.type === "string" && p.type.startsWith("tool-")) {
+    return p;
+  }
+  // Старый формат БД: {type:"tool", name, arguments, result} — конвертируем.
+  if (p.type === "tool" && p.name) {
     const errored = p.result && typeof p.result === "object" && "error" in p.result;
     return {
       type: `tool-${p.name}`,
@@ -93,7 +99,7 @@ export default function ChatPane() {
       {history === null ? (
         <div className={styles.loading}>Загружаю историю…</div>
       ) : (
-        <ChatInner key={resetKey} initialMessages={history} onLoadMessages={loadHistory} />
+        <ChatInner key={resetKey} initialMessages={history} />
       )}
 
       {confirmReset ? (
@@ -110,37 +116,53 @@ export default function ChatPane() {
   );
 }
 
-function ChatInner({
-  initialMessages,
-  onLoadMessages,
-}: {
-  initialMessages: UIMessage[];
-  onLoadMessages: () => void;
-}) {
+function ChatInner({ initialMessages }: { initialMessages: UIMessage[] }) {
+  // useChat — UI-обёртка для рендера messages и отправки sendMessage. Сам стрим
+  // ответа агента не нужен: POST /chat/messages возвращает 200 OK, useChat
+  // считает запрос завершённым; ответ агента приезжает воркером и догоняется
+  // через /api/chat/stream → setMessages.
   const transport = useRef(
     new DefaultChatTransport({ api: `${API}/chat/messages` }),
   ).current;
 
-  const { messages, sendMessage, status, stop, setMessages } = useChat({
+  const { messages, sendMessage, setMessages } = useChat({
     transport,
     messages: initialMessages,
-    onFinish: () => {
-      // ассистент закончил — обновим из БД, чтобы взять
-      // канонический набор parts, привязки к скриншотам и т.п.
-      onLoadMessages();
-    },
-    onError: () => {
-      onLoadMessages();
-    },
   });
 
-  const busy = status === "submitted" || status === "streaming";
+  // agent_active/agent_thinking — единственный источник истины для Stop/Pill.
+  const [agentActive, setAgentActive] = useState(false);
 
-  // Live-подписка на /api/chat/stream: бэк шлёт обновления при каждом INSERT
-  // в chat_messages (например, когда auto-trigger пишет стартовое сообщение
-  // или итоговую сводку). В активный стрим useChat не вмешиваемся.
-  const statusRef = useRef(status);
-  statusRef.current = status;
+  useEffect(() => {
+    let stopped = false;
+    let backoff = 1000;
+    let es: EventSource | null = null;
+    const open = () => {
+      if (stopped) return;
+      es = new EventSource(`${API}/status/stream`);
+      es.onmessage = (e) => {
+        try {
+          const s = JSON.parse(e.data) as Stats;
+          setAgentActive(!!s.agent_active);
+          backoff = 1000;
+        } catch {}
+      };
+      es.onerror = () => {
+        es?.close();
+        es = null;
+        if (!stopped) setTimeout(open, backoff);
+        backoff = Math.min(backoff * 2, 8000);
+      };
+    };
+    open();
+    return () => {
+      stopped = true;
+      es?.close();
+    };
+  }, []);
+
+  // /api/chat/stream — снапшот всех messages при каждом NOTIFY chat_changed.
+  // Мы всегда применяем snapshot: useChat не стримит, гонок нет.
   useEffect(() => {
     let stopped = false;
     let backoff = 1000;
@@ -149,25 +171,14 @@ function ChatInner({
       if (stopped) return;
       es = new EventSource(`${API}/chat/stream`);
       es.onmessage = (e) => {
-        // Debug-trace: видно через window.__chatLogs из dev-консоли/тестов.
-        const w = window as any;
-        if (!w.__chatLogs) w.__chatLogs = [];
         try {
           const data = JSON.parse(e.data);
           const ui = (data.messages || []).map((m: PersistedMessage) =>
             persistedToUIMessage(m),
           );
-          w.__chatLogs.push(`evt msgs=${ui.length} status=${statusRef.current}`);
-          if (statusRef.current !== "ready" && statusRef.current !== "error") {
-            w.__chatLogs.push(`  skipped (busy)`);
-            return;
-          }
           setMessages(ui);
-          w.__chatLogs.push(`  setMessages called`);
           backoff = 1000;
-        } catch (err) {
-          w.__chatLogs.push(`parse error: ${String(err)}`);
-        }
+        } catch {}
       };
       es.onerror = () => {
         es?.close();
@@ -184,14 +195,15 @@ function ChatInner({
   }, [setMessages]);
 
   const threadRef = useRef<HTMLDivElement | null>(null);
-
   useEffect(() => {
     const el = threadRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages, busy]);
+  }, [messages, agentActive]);
 
   const onSend = ({ text, files }: { text: string; files: File[] }) => {
+    // Send во время работы агента: API сам ставит agent_run.stop_requested=true,
+    // воркер аккуратно прервёт текущую и тут же стартует новую с этим user-сообщением.
     let fileList: FileList | undefined;
     if (files.length) {
       const dt = new DataTransfer();
@@ -199,6 +211,14 @@ function ChatInner({
       fileList = dt.files;
     }
     sendMessage({ text, files: fileList });
+  };
+
+  const onStop = async () => {
+    try {
+      await fetch(`${API}/agent/stop`, { method: "POST" });
+    } catch {
+      /* банер «связь потеряна» сам покажется */
+    }
   };
 
   return (
@@ -213,7 +233,7 @@ function ChatInner({
                 key={m.id}
                 role={m.role as any}
                 parts={(m as any).parts ?? []}
-                streaming={busy && i === messages.length - 1 && m.role === "assistant"}
+                streaming={agentActive && i === messages.length - 1 && m.role === "assistant"}
               />
             ))}
           </div>
@@ -221,7 +241,7 @@ function ChatInner({
       </div>
 
       <footer className={styles.composerWrap}>
-        <Composer onSend={onSend} onStop={stop} busy={busy} />
+        <Composer onSend={onSend} onStop={onStop} busy={agentActive} />
       </footer>
     </>
   );

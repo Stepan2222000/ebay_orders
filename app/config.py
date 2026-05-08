@@ -16,7 +16,9 @@ class Settings:
     pg_database: str
 
     openrouter_api_key: str
-    openrouter_model: str = "moonshotai/kimi-k2.6"
+    openrouter_model_a: str = "moonshotai/kimi-k2.6"  # OCR — стадия A
+    openrouter_model_b: str = "openai/gpt-5.5"        # агент — стадия B
+    openrouter_reasoning_effort_b: str = "medium"
     openrouter_max_tokens: int = 16000
     openrouter_timeout_s: float = 120.0
     openrouter_ignore_providers: tuple[str, ...] = ("inceptron",)

@@ -6,8 +6,9 @@ execute_sql / execute_save_order — серверные обработчики.
 аудит-триггер из миграции 001 подхватит его автоматически.
 """
 import json
-from datetime import date, datetime
-from decimal import Decimal
+import re
+from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import asyncpg
@@ -57,17 +58,18 @@ OPENAI_TOOLS: list[dict] = [
                     "sold_by": {"type": "string"},
                     "ordered_at": {
                         "type": ["string", "null"],
-                        "description": "ISO timestamp 'YYYY-MM-DD HH:MM:SS' (можно с TZ), "
-                                       "если уверен в формате; иначе null.",
+                        "description": "Дата+время оформления заказа КАК ВИДНО в observed "
+                                       "('May 3, 2026 at 4:23 PM' или ISO). Сервер нормализует.",
                     },
-                    "order_total_usd": {"type": "number"},
-                    "item_subtotal_usd": {"type": ["number", "null"]},
-                    "shipping_usd":      {"type": ["number", "null"]},
-                    "sales_tax_usd":     {"type": ["number", "null"]},
+                    "order_total_usd": {"type": ["number", "string"]},
+                    "item_subtotal_usd": {"type": ["number", "string", "null"]},
+                    "shipping_usd":      {"type": ["number", "string", "null"]},
+                    "sales_tax_usd":     {"type": ["number", "string", "null"]},
                     "delivery_status":   {"type": ["string", "null"]},
                     "delivered_date": {
                         "type": ["string", "null"],
-                        "description": "Дата 'YYYY-MM-DD' если уверен; иначе null.",
+                        "description": "Дата доставки КАК ВИДНО в observed ('Thu, May 7' или ISO). "
+                                       "Сервер нормализует с учётом года из ordered_at.",
                     },
                     "arriving_by_date":  {"type": ["string", "null"],
                                           "description": "Текстовый диапазон/дата как видно."},
@@ -86,7 +88,7 @@ OPENAI_TOOLS: list[dict] = [
                                 "item_number":         {"type": "string"},
                                 "item_title":          {"type": "string"},
                                 "item_quantity":       {"type": "integer"},
-                                "item_line_total_usd": {"type": "number"},
+                                "item_line_total_usd": {"type": ["number", "string"]},
                             },
                         },
                     },
@@ -97,7 +99,7 @@ OPENAI_TOOLS: list[dict] = [
                             "additionalProperties": False,
                             "required": ["refund_amount_usd", "refund_date", "refund_note"],
                             "properties": {
-                                "refund_amount_usd": {"type": "number"},
+                                "refund_amount_usd": {"type": ["number", "string"]},
                                 "refund_date":       {"type": ["string", "null"]},
                                 "refund_note":       {"type": ["string", "null"]},
                             },
@@ -114,6 +116,123 @@ OPENAI_TOOLS: list[dict] = [
         },
     },
 ]
+
+
+# ─── Нормализация полей save_order ──────────────────────────────────────────
+#
+# Стадия A отдаёт суммы и даты в виде «как видно на скрине» — '$76.56',
+# 'May 3, 2026 at 4:23 PM', 'Thu, May 7' и т.п. Промпт стадии B велит класть
+# их в save_order как есть; парсинг делает сервер. Так устойчивее, чем
+# уговаривать LLM выдавать строгие форматы.
+
+_MONEY_RE = re.compile(r"-?\$?\s*([\d,]+(?:\.\d+)?)")
+_TS_FORMATS = (
+    "%b %d, %Y at %I:%M %p",
+    "%B %d, %Y at %I:%M %p",
+    "%b %d, %Y, %I:%M %p",
+    "%B %d, %Y, %I:%M %p",
+    "%b %d, %Y %I:%M %p",
+    "%B %d, %Y %I:%M %p",
+)
+_DATE_FORMATS_NO_YEAR = (
+    "%a, %b %d",
+    "%A, %B %d",
+    "%b %d",
+    "%B %d",
+)
+_DATE_FORMATS_WITH_YEAR = (
+    "%b %d, %Y",
+    "%B %d, %Y",
+    "%a, %b %d, %Y",
+    "%A, %B %d, %Y",
+)
+
+
+def parse_money(v: Any) -> Decimal | None:
+    """Возвращает Decimal или None.
+
+    Принимает: Decimal/int/float/str. 'Free'/'free'/None/'' → None.
+    Из строки выкусывает первое денежное число (`$1,234.50` → 1234.50).
+    """
+    if v is None:
+        return None
+    if isinstance(v, Decimal):
+        return v
+    if isinstance(v, (int, float)):
+        return Decimal(str(v))
+    if not isinstance(v, str):
+        return None
+    s = v.strip()
+    if not s:
+        return None
+    if s.lower() in ("free", "free shipping"):
+        return Decimal("0.00")
+    m = _MONEY_RE.search(s)
+    if not m:
+        return None
+    try:
+        return Decimal(m.group(1).replace(",", ""))
+    except InvalidOperation:
+        return None
+
+
+def parse_timestamp(v: Any) -> datetime | None:
+    """ISO timestamp ИЛИ eBay-формат 'May 3, 2026 at 4:23 PM' → tz-aware datetime."""
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    if not isinstance(v, str):
+        return None
+    s = v.strip()
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        pass
+    for fmt in _TS_FORMATS:
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def parse_date(v: Any, *, year_hint: int | None = None) -> date | None:
+    """ISO 'YYYY-MM-DD' или 'Thu, May 7' / 'May 7' (+year_hint) → date.
+
+    Если year_hint не задан и в строке нет года — берётся текущий год.
+    """
+    if v is None:
+        return None
+    if isinstance(v, date) and not isinstance(v, datetime):
+        return v
+    if isinstance(v, datetime):
+        return v.date()
+    if not isinstance(v, str):
+        return None
+    s = v.strip()
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        pass
+    for fmt in _DATE_FORMATS_WITH_YEAR:
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    year = year_hint or datetime.now(timezone.utc).year
+    for fmt in _DATE_FORMATS_NO_YEAR:
+        try:
+            partial = datetime.strptime(s, fmt)
+            return partial.replace(year=year).date()
+        except ValueError:
+            continue
+    return None
 
 
 # ─── Сериализация результатов для tool-сообщений ────────────────────────────
@@ -228,6 +347,15 @@ async def execute_save_order(pool: asyncpg.Pool, args: dict) -> dict:
     if not (args.get("items") or []):
         return {"error": "items is empty"}
 
+    ordered_at = parse_timestamp(args.get("ordered_at"))
+    delivered = parse_date(
+        args.get("delivered_date"),
+        year_hint=ordered_at.year if ordered_at else None,
+    )
+    order_total = parse_money(args.get("order_total_usd"))
+    if order_total is None:
+        return {"error": "order_total_usd не распознан"}
+
     async with pool.acquire() as conn:
         try:
             async with conn.transaction():
@@ -252,13 +380,13 @@ async def execute_save_order(pool: asyncpg.Pool, args: dict) -> dict:
                     _UPSERT_ORDER_SQL,
                     args["order_number"],
                     args["sold_by"],
-                    args.get("ordered_at"),
-                    args["order_total_usd"],
-                    args.get("item_subtotal_usd"),
-                    args.get("shipping_usd"),
-                    args.get("sales_tax_usd"),
+                    ordered_at,
+                    order_total,
+                    parse_money(args.get("item_subtotal_usd")),
+                    parse_money(args.get("shipping_usd")),
+                    parse_money(args.get("sales_tax_usd")),
                     args.get("delivery_status"),
-                    args.get("delivered_date"),
+                    delivered,
                     args.get("arriving_by_date"),
                     args.get("shipping_service"),
                     args.get("is_untracked"),
@@ -271,21 +399,32 @@ async def execute_save_order(pool: asyncpg.Pool, args: dict) -> dict:
                                      + ", ".join(r["sha"][:12] for r in bad)}
 
                 for it in args["items"]:
+                    line_total = parse_money(it.get("item_line_total_usd"))
+                    if line_total is None:
+                        return {"error": f"item_line_total_usd не распознан "
+                                         f"для {it.get('item_number')}"}
                     await conn.execute(
                         _UPSERT_ITEM_SQL,
                         order_id,
                         it["item_number"],
                         it["item_title"],
                         it["item_quantity"],
-                        it["item_line_total_usd"],
+                        line_total,
                     )
 
                 for rf in (args.get("refunds") or []):
+                    refund_amount = parse_money(rf.get("refund_amount_usd"))
+                    if refund_amount is None:
+                        continue
+                    refund_date = parse_date(
+                        rf.get("refund_date"),
+                        year_hint=ordered_at.year if ordered_at else None,
+                    )
                     await conn.execute(
                         _INSERT_REFUND_SQL,
                         order_id,
-                        rf["refund_amount_usd"],
-                        rf.get("refund_date"),
+                        refund_amount,
+                        refund_date,
                         rf.get("refund_note"),
                     )
 
