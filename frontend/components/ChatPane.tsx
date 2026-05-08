@@ -21,7 +21,11 @@ interface PersistedMessage {
 function persistedPartToUIPart(p: any): any {
   if (p.type === "text") return { type: "text", text: p.text };
   if (p.type === "file") {
-    return { type: "file", mediaType: p.mime, url: p.data_url };
+    return {
+      type: "file",
+      mediaType: p.mediaType ?? p.mime,
+      url: p.url ?? p.data_url,
+    };
   }
   if (typeof p.type === "string" && p.type.startsWith("tool-")) {
     return p;
@@ -65,28 +69,32 @@ export default function ChatPane() {
 
   return (
     <section className={styles.pane} data-testid="chat-pane">
-      <header className={styles.header}>
-        <div className={styles.headerLeft}>
-          <span className={styles.brand}>eBay orders.</span>
-          <AssemblingIndicator />
-        </div>
-        <div className={styles.headerActions}>
-          <ThemeToggle />
-          <button
-            type="button"
-            className={styles.resetBtn}
-            data-testid="reset-chat"
-            onClick={() => setConfirmReset(true)}
-          >
-            Сбросить чат
-          </button>
-        </div>
-      </header>
-
       {history === null ? (
-        <div className={styles.loading}>Загружаю историю…</div>
+        <>
+          <header className={styles.header}>
+            <div className={styles.headerLeft}>
+              <span className={styles.brand}>eBay orders.</span>
+            </div>
+            <div className={styles.headerActions}>
+              <ThemeToggle />
+              <button
+                type="button"
+                className={styles.resetBtn}
+                data-testid="reset-chat"
+                disabled
+              >
+                Сбросить чат
+              </button>
+            </div>
+          </header>
+          <div className={styles.loading}>Загружаю историю…</div>
+        </>
       ) : (
-        <ChatInner key={resetKey} initialMessages={history} />
+        <ChatInner
+          key={resetKey}
+          initialMessages={history}
+          onResetClick={() => setConfirmReset(true)}
+        />
       )}
 
       {confirmReset ? (
@@ -103,15 +111,29 @@ export default function ChatPane() {
   );
 }
 
-function ChatInner({ initialMessages }: { initialMessages: UIMessage[] }) {
+function ChatInner({
+  initialMessages,
+  onResetClick,
+}: {
+  initialMessages: UIMessage[];
+  onResetClick: () => void;
+}) {
   const transport = useRef(
-    new DefaultChatTransport({ api: `${API}/chat` }),
+    new DefaultChatTransport({
+      api: `${API}/chat`,
+      // только последнее сообщение отдаём бэку — историю он перечитывает из БД сам
+      prepareSendMessagesRequest: ({ messages }) => ({
+        body: { message: messages.at(-1) },
+      }),
+    }),
   ).current;
 
-  const { messages, sendMessage } = useChat({
+  const { messages, sendMessage, status, stop } = useChat({
     transport,
     messages: initialMessages,
   });
+
+  const busy = status === "streaming" || status === "submitted";
 
   const threadRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -132,6 +154,25 @@ function ChatInner({ initialMessages }: { initialMessages: UIMessage[] }) {
 
   return (
     <>
+      <header className={styles.header}>
+        <div className={styles.headerLeft}>
+          <span className={styles.brand}>eBay orders.</span>
+          <AssemblingIndicator streaming={busy} />
+        </div>
+        <div className={styles.headerActions}>
+          <ThemeToggle />
+          <button
+            type="button"
+            className={styles.resetBtn}
+            data-testid="reset-chat"
+            onClick={onResetClick}
+            disabled={busy}
+          >
+            Сбросить чат
+          </button>
+        </div>
+      </header>
+
       <div className={styles.thread} ref={threadRef} data-testid="thread">
         {messages.length === 0 ? (
           <p className={styles.empty}>Начните разговор или дроп скриншоты в сайдбар.</p>
@@ -149,7 +190,7 @@ function ChatInner({ initialMessages }: { initialMessages: UIMessage[] }) {
       </div>
 
       <footer className={styles.composerWrap}>
-        <Composer onSend={onSend} />
+        <Composer onSend={onSend} busy={busy} onStop={stop} />
       </footer>
     </>
   );

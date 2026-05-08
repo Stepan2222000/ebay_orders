@@ -6,11 +6,13 @@ import { useSSE } from "@/lib/sse";
 import type { Stats } from "@/lib/types";
 import styles from "./AssemblingIndicator.module.css";
 
-// Pill в шапке чата. Источник — общий /api/status/stream.
-// Видим, только если есть распознанные снимки, ожидающие сборки в заказы.
-// Источник числа — assembling (count where ocr_status='done'
-// AND agent_status IN ('pending','running')).
-export default function AssemblingIndicator() {
+// Pill в шапке чата. Источник чисел — общий /api/status/stream.
+//
+// Два режима:
+//  - streaming === true и agent_total > 0 → «Обработано {done} из {total} · ошибок {failed}».
+//  - assembling > 0 → «Новых снимков: {assembling}».
+//  - иначе скрыт.
+export default function AssemblingIndicator({ streaming = false }: { streaming?: boolean }) {
   const [s, setS] = useState<Stats | null>(null);
 
   useSSE(`${API}/status/stream`, (data) => {
@@ -18,14 +20,29 @@ export default function AssemblingIndicator() {
     setS(data as Stats);
   });
 
-  if (!s || s.assembling === 0) return null;
+  if (!s) return null;
 
-  return (
-    <span className={styles.pill} data-testid="assembling-indicator">
-      <span className={styles.spark}>
-        <Sparkles size={12} />
+  if (streaming && s.agent_total > 0) {
+    return (
+      <span className={styles.pill} data-testid="assembling-indicator" data-mode="streaming">
+        <span className={styles.spark}>
+          <Sparkles size={12} />
+        </span>
+        Обработано {s.agent_done} из {s.agent_total} · ошибок {s.agent_failed}
       </span>
-      Новых снимков: {s.assembling}
-    </span>
-  );
+    );
+  }
+
+  if (s.assembling > 0) {
+    return (
+      <span className={styles.pill} data-testid="assembling-indicator" data-mode="assembling">
+        <span className={styles.spark}>
+          <Sparkles size={12} />
+        </span>
+        Новых снимков: {s.assembling}
+      </span>
+    );
+  }
+
+  return null;
 }

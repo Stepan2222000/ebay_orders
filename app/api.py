@@ -1,25 +1,38 @@
-"""FastAPI: приём скриншотов + GET истории чата + сайдбар-стрим.
+"""FastAPI: приём скриншотов + чат стадии B + сайдбар-стрим.
 
-Сейчас здесь нет POST стадии B — он будет добавлен следующим этапом.
-Из работающего: загрузка/просмотр скриншотов, GET истории чата для useChat
-initialMessages, SSE со счётчиками OCR + agent_total/done/failed.
+Эндпоинты:
+- POST /api/screenshots, GET/DELETE /api/screenshots/{sha} — стадия A.
+- GET /api/status, GET /api/status/stream — счётчики OCR + agent_*.
+- GET /api/chat/messages, POST /api/chat/reset — история чата.
+- POST /api/chat — стадия B: SSE поток UIMessageStream v1
+  (см. app/agent.py:stream_stage_b и app/stream.py).
 
-SSE: один общий PgFanout (app/listener.py) с одним dedicated asyncpg-коннектом
-держит LISTEN на status_changed. Подписчики читают БД через общий pool().
+SSE статуса: один общий PgFanout (app/listener.py) с dedicated
+asyncpg-коннектом держит LISTEN на status_changed. Подписчики читают
+БД через общий pool().
 """
 import asyncio
 import json
+import logging
+import uuid
 from contextlib import asynccontextmanager
 
+import anyio
 import asyncpg
+import httpx
 from fastapi import APIRouter, FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 
+from .agent import stream_stage_b
 from .config import settings
-from .db import close, pool
+from .db import close, dump_schema_text, pool
 from .listener import PgFanout
+from .prompt import SYSTEM_PROMPT_STAGE_B
+from .stream import SSE_HEADERS, sse
 from .util import detect_mime, sha256
+
+log = logging.getLogger(__name__)
 
 
 _FANOUT_CHANNELS = ("status_changed",)
@@ -27,7 +40,10 @@ _FANOUT_CHANNELS = ("status_changed",)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await pool()
+    p = await pool()
+    async with p.acquire() as conn:
+        app.state.db_schema = await dump_schema_text(conn)
+    app.state.http = httpx.AsyncClient(timeout=settings.openrouter_timeout_s)
     app.state.fanout = PgFanout(
         host=settings.pg_host,
         port=settings.pg_port,
@@ -41,6 +57,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await app.state.fanout.close()
+        await app.state.http.aclose()
         await close()
 
 
@@ -273,11 +290,19 @@ async def screenshot_delete(sha: str):
     return {"deleted": sha}
 
 
-# ─── Stage B: история чата (POST стадии B будет добавлен на следующем шаге) ─
+# ─── Stage B: история чата + POST /api/chat ──────────────────────────────
 
 _CHAT_HISTORY_SQL = (
     "SELECT message_id, role, parts, created_at FROM chat_messages "
     "WHERE session_id='default' ORDER BY created_at, message_id"
+)
+_PENDING_COUNT_SQL = (
+    "SELECT count(*)::int FROM screenshots "
+    "WHERE ocr_status='done' AND agent_status='pending'"
+)
+_INSERT_CHAT_MSG_SQL = (
+    "INSERT INTO chat_messages(session_id, role, parts) "
+    "VALUES('default', $1, $2)"
 )
 
 
@@ -294,6 +319,53 @@ async def _chat_history(conn: asyncpg.Connection) -> list[dict]:
     ]
 
 
+def _user_for_model(parts: list[dict]) -> dict | None:
+    """Сложить user-сообщение в OpenAI multimodal-формат.
+
+    text-парты → {type:"text", text:...}; file-парты с image/* → image_url
+    с data-URL. Если есть только текст — content становится строкой.
+    """
+    text_chunks: list[str] = []
+    image_urls: list[str] = []
+    for p in parts:
+        if p.get("type") == "text" and p.get("text"):
+            text_chunks.append(p["text"])
+        elif p.get("type") == "file":
+            mt = p.get("mediaType") or p.get("mime") or ""
+            url = p.get("url") or p.get("data_url")
+            if url and mt.startswith("image/"):
+                image_urls.append(url)
+    if not text_chunks and not image_urls:
+        return None
+    if not image_urls:
+        return {"role": "user", "content": "\n".join(text_chunks)}
+    content: list[dict] = []
+    if text_chunks:
+        content.append({"type": "text", "text": "\n".join(text_chunks)})
+    for u in image_urls:
+        content.append({"type": "image_url", "image_url": {"url": u}})
+    return {"role": "user", "content": content}
+
+
+def _project_history_for_model(history: list[dict]) -> list[dict]:
+    """Формат для OpenAI/OpenRouter: assistant — text-only (без tool plates),
+    user — text+image_url. Пустые ассистент-сообщения пропускаются."""
+    out: list[dict] = []
+    for m in history:
+        parts = m.get("parts") or []
+        role = m["role"]
+        if role == "user":
+            msg = _user_for_model(parts)
+            if msg is not None:
+                out.append(msg)
+        elif role == "assistant":
+            text = "\n".join(p["text"] for p in parts if p.get("type") == "text" and p.get("text"))
+            if text:
+                out.append({"role": "assistant", "content": text})
+        # system — не сохраняем в чат, не возвращаем
+    return out
+
+
 @api.get("/chat/messages")
 async def get_chat_messages():
     async with (await pool()).acquire() as conn:
@@ -307,6 +379,59 @@ async def reset_chat():
         "SELECT count(*) FROM d"
     )
     return {"deleted": int(n or 0)}
+
+
+@api.post("/chat")
+async def chat_post(request: Request):
+    payload = await request.json()
+    user_msg = payload.get("message") or {}
+    user_parts = user_msg.get("parts") or []
+
+    p = await pool()
+    async with p.acquire() as conn:
+        await conn.execute(_INSERT_CHAT_MSG_SQL, "user", user_parts)
+        history = await _chat_history(conn)
+        pending_count = await conn.fetchval(_PENDING_COUNT_SQL) or 0
+
+    messages_for_model: list[dict] = [{
+        "role": "system",
+        "content": SYSTEM_PROMPT_STAGE_B.format(
+            pending_count=pending_count,
+            db_schema=request.app.state.db_schema,
+        ),
+    }]
+    messages_for_model.extend(_project_history_for_model(history))
+    # последнее user-сообщение уже в history (только что INSERT'нули) — не дублируем
+
+    message_id = f"msg_{uuid.uuid4().hex}"
+    parts_acc: list[dict] = []
+    cancelled = False
+
+    async def gen():
+        nonlocal cancelled
+        try:
+            async for ev in stream_stage_b(
+                p, request.app.state.http, messages_for_model, message_id, parts_acc,
+            ):
+                yield sse(ev)
+            yield sse("[DONE]")
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            with anyio.CancelScope(shield=True):
+                if cancelled:
+                    parts_acc.append({"type": "text", "text": "(прервано)"})
+                if parts_acc:
+                    try:
+                        async with p.acquire() as c:
+                            await c.execute(
+                                _INSERT_CHAT_MSG_SQL, "assistant", parts_acc,
+                            )
+                    except Exception as e:
+                        log.error("failed to persist assistant msg: %s", e)
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=SSE_HEADERS)
 
 
 app.include_router(api)
