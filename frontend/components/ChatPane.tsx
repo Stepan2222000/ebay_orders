@@ -4,6 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import type { UIMessage } from "ai";
 import { API, resetChat as resetChatApi } from "@/lib/api";
+import { useSSE } from "@/lib/sse";
 import type { Stats } from "@/lib/types";
 import AssemblingIndicator from "./AssemblingIndicator";
 import ConfirmDialog from "./ConfirmDialog";
@@ -130,69 +131,22 @@ function ChatInner({ initialMessages }: { initialMessages: UIMessage[] }) {
     messages: initialMessages,
   });
 
-  // agent_active/agent_thinking — единственный источник истины для Stop/Pill.
+  // agent_active — единственный источник истины для Stop/Composer.busy.
   const [agentActive, setAgentActive] = useState(false);
 
-  useEffect(() => {
-    let stopped = false;
-    let backoff = 1000;
-    let es: EventSource | null = null;
-    const open = () => {
-      if (stopped) return;
-      es = new EventSource(`${API}/status/stream`);
-      es.onmessage = (e) => {
-        try {
-          const s = JSON.parse(e.data) as Stats;
-          setAgentActive(!!s.agent_active);
-          backoff = 1000;
-        } catch {}
-      };
-      es.onerror = () => {
-        es?.close();
-        es = null;
-        if (!stopped) setTimeout(open, backoff);
-        backoff = Math.min(backoff * 2, 8000);
-      };
-    };
-    open();
-    return () => {
-      stopped = true;
-      es?.close();
-    };
-  }, []);
+  useSSE(`${API}/status/stream`, (data) => {
+    if (!data || typeof data !== "object") return;
+    setAgentActive(!!(data as Stats).agent_active);
+  });
 
   // /api/chat/stream — снапшот всех messages при каждом NOTIFY chat_changed.
-  // Мы всегда применяем snapshot: useChat не стримит, гонок нет.
-  useEffect(() => {
-    let stopped = false;
-    let backoff = 1000;
-    let es: EventSource | null = null;
-    const open = () => {
-      if (stopped) return;
-      es = new EventSource(`${API}/chat/stream`);
-      es.onmessage = (e) => {
-        try {
-          const data = JSON.parse(e.data);
-          const ui = (data.messages || []).map((m: PersistedMessage) =>
-            persistedToUIMessage(m),
-          );
-          setMessages(ui);
-          backoff = 1000;
-        } catch {}
-      };
-      es.onerror = () => {
-        es?.close();
-        es = null;
-        if (!stopped) setTimeout(open, backoff);
-        backoff = Math.min(backoff * 2, 8000);
-      };
-    };
-    open();
-    return () => {
-      stopped = true;
-      es?.close();
-    };
-  }, [setMessages]);
+  useSSE(`${API}/chat/stream`, (data) => {
+    if (!data || typeof data !== "object") return;
+    const list = (data as { messages?: PersistedMessage[] }).messages;
+    if (!Array.isArray(list)) return;
+    const ui = list.map((m) => persistedToUIMessage(m));
+    setMessages(ui);
+  });
 
   const threadRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {

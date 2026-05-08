@@ -1,6 +1,7 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { API } from "@/lib/api";
+import { useSSE } from "@/lib/sse";
 import type { Stats } from "@/lib/types";
 import styles from "./StatsRow.module.css";
 
@@ -23,42 +24,19 @@ export default function StatsRow({ onChange }: { onChange?: (s: Stats) => void }
     assembling: 0,
     agent_active: false,
     agent_thinking: false,
+    agent_total: 0,
+    agent_done: 0,
+    agent_failed: 0,
   });
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
-  useEffect(() => {
-    let es: EventSource | null = null;
-    let stopped = false;
-    let backoff = 1000;
-
-    const open = () => {
-      if (stopped) return;
-      es = new EventSource(`${API}/status/stream`);
-      es.onmessage = (e) => {
-        try {
-          const next = JSON.parse(e.data) as Stats;
-          setStats(next);
-          onChangeRef.current?.(next);
-          backoff = 1000;
-        } catch {
-          // игнорируем мусор
-        }
-      };
-      es.onerror = () => {
-        es?.close();
-        es = null;
-        if (!stopped) setTimeout(open, backoff);
-        backoff = Math.min(backoff * 2, 8000);
-      };
-    };
-    open();
-
-    return () => {
-      stopped = true;
-      es?.close();
-    };
-  }, []);
+  useSSE(`${API}/status/stream`, (data) => {
+    if (!data || typeof data !== "object") return;
+    const next = data as Stats;
+    setStats(next);
+    onChangeRef.current?.(next);
+  });
 
   return (
     <div className={styles.row} data-testid="stats" data-json={JSON.stringify(stats)}>

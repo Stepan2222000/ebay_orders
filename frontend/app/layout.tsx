@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import Providers from "./providers";
 
 export const metadata: Metadata = {
   title: "eBay orders",
@@ -7,6 +8,9 @@ export const metadata: Metadata = {
 };
 
 // Inline-скрипт до гидрации — без flash светлой/тёмной темы при загрузке.
+// suppressHydrationWarning на <html>: data-theme меняется этим скриптом до
+// гидрации, и server-render («dark») может отличаться от client-state — это
+// штатный кейс, React предупреждать не должен.
 const themeBootScript = `
 (function() {
   try {
@@ -21,11 +25,13 @@ const themeBootScript = `
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ru" data-theme="dark">
+    <html lang="ru" data-theme="dark" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
       </head>
-      <body>{children}</body>
+      <body>
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }

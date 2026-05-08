@@ -11,7 +11,12 @@ run_agent_session(pool, http, run_id, *, auto_nudge) — async generator,
 Использует stream_chat_step из openrouter.py (httpx streaming + tool_call deltas
 + reasoning_details для GPT-5.5). Между чанками проверяет agent_run.stop_requested
 с кешем 0.5s. Перед/после каждого LLM-вызова обновляет agent_run.thinking.
+
+Tool calls внутри одного step выполняются ПАРАЛЛЕЛЬНО через asyncio.gather с
+Semaphore(_TOOL_CONCURRENCY). Раньше 36 save_order шли последовательно по
+0.5–2с = 30–60с тишины между LLM-step'ами. С параллелью — 3–5с.
 """
+import asyncio
 import json
 import logging
 import time
@@ -101,6 +106,22 @@ async def load_chat_history(pool: asyncpg.Pool) -> list[dict]:
     return _history_to_messages(rows)
 
 
+# ─── tool dispatch ──────────────────────────────────────────────────────────
+
+async def _run_tool(sem: asyncio.Semaphore, pool: asyncpg.Pool, tc: dict) -> dict:
+    """Запускает один tool call под семафором. Возвращает result-dict."""
+    name = tc["name"]
+    args = tc["arguments"]
+    if isinstance(args, dict) and args.get("__error__"):
+        return {"error": f"invalid tool arguments: {args.get('__error__')}"}
+    async with sem:
+        if name == "sql":
+            return await execute_sql(pool, (args or {}).get("query", ""))
+        if name == "save_order":
+            return await execute_save_order(pool, args or {})
+        return {"error": f"неизвестный инструмент: {name}"}
+
+
 # ─── stop check (с кешем 0.5s) ──────────────────────────────────────────────
 
 def _make_abort_check(pool: asyncpg.Pool, run_id: int):
@@ -127,6 +148,10 @@ _AUTO_NUDGE = (
     "failed через sql (UPDATE screenshots SET agent_status='failed', "
     "last_error='...' WHERE sha256=decode('<hex>','hex'))."
 )
+
+# Параллельность tool calls внутри одного LLM-step. Должно ≤ pool.max_size,
+# иначе таски встанут в очередь за коннектом — узкое место просто переедет.
+_TOOL_CONCURRENCY = 40
 
 
 async def run_agent_session(
@@ -227,33 +252,51 @@ async def run_agent_session(
             yield {"type": "finish", "reason": final["finish_reason"]}
             return
 
+        # Сначала ВСЕ tool_start — UI сразу видит блоки в состоянии «выполняется».
         for tc in final["tool_calls"]:
-            tc_id = tc["id"]
-            name = tc["name"]
-            args = tc["arguments"]
-            yield {"type": "tool_start", "id": tc_id, "name": name, "arguments": args}
+            yield {"type": "tool_start", "id": tc["id"], "name": tc["name"],
+                   "arguments": tc["arguments"]}
 
-            if isinstance(args, dict) and args.get("__error__"):
-                result = {"error": f"invalid tool arguments: {args.get('__error__')}"}
-            elif name == "sql":
-                result = await execute_sql(pool, (args or {}).get("query", ""))
-            elif name == "save_order":
-                result = await execute_save_order(pool, args or {})
-            else:
-                result = {"error": f"неизвестный инструмент: {name}"}
-
-            yield {"type": "tool_done", "id": tc_id, "name": name,
-                   "arguments": args, "result": result}
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc_id,
-                "name": name,
-                "content": to_tool_content(result),
-            })
-
-            if await abort_check():
-                yield {"type": "abort"}
-                return
+        # Запускаем параллельно. Семафор внутри _run_tool ограничивает реальную
+        # одновременность, гарантируя, что мы не упрёмся в pool.max_size.
+        sem = asyncio.Semaphore(_TOOL_CONCURRENCY)
+        tasks = {
+            asyncio.create_task(_run_tool(sem, pool, tc)): tc
+            for tc in final["tool_calls"]
+        }
+        remaining = set(tasks.keys())
+        try:
+            while remaining:
+                if await abort_check():
+                    for t in remaining:
+                        t.cancel()
+                    await asyncio.gather(*remaining, return_exceptions=True)
+                    yield {"type": "abort"}
+                    return
+                done, remaining = await asyncio.wait(
+                    remaining, timeout=0.5,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for t in done:
+                    tc = tasks[t]
+                    try:
+                        result = t.result()
+                    except Exception as e:
+                        result = {"error": f"{type(e).__name__}: {e}"}
+                    yield {"type": "tool_done", "id": tc["id"], "name": tc["name"],
+                           "arguments": tc["arguments"], "result": result}
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "name": tc["name"],
+                        "content": to_tool_content(result),
+                    })
+        finally:
+            # Защита от утечек тасков, если генератор закроют снаружи.
+            for t in remaining:
+                t.cancel()
+            if remaining:
+                await asyncio.gather(*remaining, return_exceptions=True)
 
         if final["finish_reason"] == "stop":
             # Модель сказала «stop», но при этом tool_calls — формально это

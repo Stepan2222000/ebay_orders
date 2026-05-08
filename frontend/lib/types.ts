@@ -12,6 +12,12 @@ export interface Stats {
   agent_active: boolean;
   /** идёт ли сейчас LLM-вызов внутри активной сессии */
   agent_thinking: boolean;
+  /** общее число снимков, попавших в стадию B хотя бы раз */
+  agent_total: number;
+  /** из них собрано в заказы */
+  agent_done: number;
+  /** из них помечено failed */
+  agent_failed: number;
 }
 
 export interface Screenshot {

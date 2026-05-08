@@ -28,7 +28,7 @@ async def pool() -> asyncpg.Pool:
             password=settings.pg_password,
             database=settings.pg_database,
             min_size=1,
-            max_size=20,
+            max_size=40,
             init=_init_conn,
         )
     return _pool

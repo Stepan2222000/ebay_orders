@@ -5,6 +5,10 @@
 (автоматический Stop при Send), возвращает 200 OK. Воркер по NOTIFY
 'user_message_arrived' просыпается и стримит ответ в parts assistant-message.
 Фронт получает обновления через /api/chat/stream (SSE snapshot по chat_changed).
+
+SSE: один общий PgFanout (app/listener.py) с одним dedicated asyncpg-коннектом
+держит LISTEN на status_changed/agent_state/chat_changed. SSE-handler'ы берут
+очередь из fanout и читают БД через общий pool() — никаких per-client коннектов.
 """
 import asyncio
 import json
@@ -18,16 +22,30 @@ from fastapi.responses import Response, StreamingResponse
 
 from .config import settings
 from .db import close, pool
+from .listener import PgFanout
 from .util import detect_mime, sha256
+
+
+_FANOUT_CHANNELS = ("status_changed", "agent_state", "chat_changed")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await pool()
     app.state.http = httpx.AsyncClient()
+    app.state.fanout = PgFanout(
+        host=settings.pg_host,
+        port=settings.pg_port,
+        user=settings.pg_user,
+        password=settings.pg_password,
+        database=settings.pg_database,
+        channels=_FANOUT_CHANNELS,
+    )
+    await app.state.fanout.start()
     try:
         yield
     finally:
+        await app.state.fanout.close()
         await app.state.http.aclose()
         await close()
 
@@ -49,6 +67,20 @@ app.add_middleware(
 api = APIRouter(prefix="/api")
 
 
+# ─── helpers ────────────────────────────────────────────────────────────────
+
+_HEARTBEAT = json.dumps({"_heartbeat": True})
+_HEARTBEAT_TIMEOUT_S = 15.0
+
+
+async def _drain_queue(q: asyncio.Queue) -> None:
+    while not q.empty():
+        try:
+            q.get_nowait()
+        except asyncio.QueueEmpty:
+            return
+
+
 # ─── Sidebar: статус транскрибации + состояние агента ──────────────────────
 
 _STATUS_SQL = (
@@ -64,18 +96,39 @@ _AGENT_STATE_SQL = (
     "       COALESCE((SELECT thinking FROM agent_run "
     "                  WHERE finished_at IS NULL ORDER BY run_id DESC LIMIT 1), false) AS thinking"
 )
+_AGENT_COUNTS_SQL = (
+    "SELECT "
+    " count(*) FILTER (WHERE ocr_status='done' "
+    "   AND agent_status IN ('pending','running','done','failed'))::int AS total, "
+    " count(*) FILTER (WHERE agent_status='done')::int AS done, "
+    " count(*) FILTER (WHERE ocr_status='done' AND agent_status='failed')::int AS failed "
+    "FROM screenshots"
+)
 
 
 async def _status_dict(conn: asyncpg.Connection) -> dict[str, object]:
-    out: dict[str, object] = {"pending": 0, "running": 0, "done": 0, "failed": 0,
-                              "assembling": 0, "agent_active": False, "agent_thinking": False}
+    out: dict[str, object] = {
+        "pending": 0, "running": 0, "done": 0, "failed": 0,
+        "assembling": 0,
+        "agent_active": False, "agent_thinking": False,
+        "agent_total": 0, "agent_done": 0, "agent_failed": 0,
+    }
     for r in await conn.fetch(_STATUS_SQL):
         out[r["s"]] = r["n"]
     out["assembling"] = await conn.fetchval(_ASSEMBLING_SQL) or 0
     state = await conn.fetchrow(_AGENT_STATE_SQL)
     out["agent_active"] = bool(state["active"])
     out["agent_thinking"] = bool(state["thinking"])
+    counts = await conn.fetchrow(_AGENT_COUNTS_SQL)
+    out["agent_total"] = counts["total"]
+    out["agent_done"] = counts["done"]
+    out["agent_failed"] = counts["failed"]
     return out
+
+
+async def _status_snapshot() -> str:
+    async with (await pool()).acquire() as conn:
+        return json.dumps(await _status_dict(conn))
 
 
 @api.get("/status")
@@ -86,36 +139,24 @@ async def status():
 
 @api.get("/status/stream")
 async def status_stream(request: Request):
-    """SSE: counts + agent state. Подписан на status_changed и agent_state."""
+    """SSE: counts + agent state. Слушает status_changed и agent_state через fanout."""
+    fanout: PgFanout = request.app.state.fanout
+    queue = fanout.subscribe("status_changed", "agent_state")
 
     async def gen():
-        conn = await asyncpg.connect(
-            host=settings.pg_host,
-            port=settings.pg_port,
-            user=settings.pg_user,
-            password=settings.pg_password,
-            database=settings.pg_database,
-        )
-        queue: asyncio.Queue = asyncio.Queue()
-
-        def on_notify(_c, _pid, _ch, _payload):
-            queue.put_nowait(None)
-
         try:
-            await conn.add_listener("status_changed", on_notify)
-            await conn.add_listener("agent_state", on_notify)
-            yield f"data: {json.dumps(await _status_dict(conn))}\n\n"
+            yield f"data: {await _status_snapshot()}\n\n"
             while True:
+                if await request.is_disconnected():
+                    return
                 try:
-                    await asyncio.wait_for(queue.get(), timeout=15.0)
+                    await asyncio.wait_for(queue.get(), timeout=_HEARTBEAT_TIMEOUT_S)
+                    await _drain_queue(queue)
+                    yield f"data: {await _status_snapshot()}\n\n"
                 except asyncio.TimeoutError:
-                    yield ": ping\n\n"
-                    continue
-                while not queue.empty():
-                    queue.get_nowait()
-                yield f"data: {json.dumps(await _status_dict(conn))}\n\n"
+                    yield f"data: {_HEARTBEAT}\n\n"
         finally:
-            await conn.close()
+            fanout.unsubscribe(queue)
 
     return StreamingResponse(
         gen(),
@@ -337,6 +378,11 @@ async def _chat_history(conn: asyncpg.Connection) -> list[dict]:
     ]
 
 
+async def _chat_snapshot() -> str:
+    async with (await pool()).acquire() as conn:
+        return json.dumps({"messages": await _chat_history(conn)}, ensure_ascii=False)
+
+
 @api.get("/chat/messages")
 async def get_chat_messages():
     async with (await pool()).acquire() as conn:
@@ -345,42 +391,24 @@ async def get_chat_messages():
 
 @api.get("/chat/stream")
 async def chat_stream(request: Request):
-    """SSE: текущая история → подписка на NOTIFY chat_changed → пуш на каждое."""
+    """SSE: текущая история → пушим snapshot на каждый chat_changed."""
+    fanout: PgFanout = request.app.state.fanout
+    queue = fanout.subscribe("chat_changed")
 
     async def gen():
-        conn = await asyncpg.connect(
-            host=settings.pg_host,
-            port=settings.pg_port,
-            user=settings.pg_user,
-            password=settings.pg_password,
-            database=settings.pg_database,
-        )
-        # JSONB ↔ dict
-        await conn.set_type_codec(
-            "jsonb",
-            encoder=json.dumps,
-            decoder=json.loads,
-            schema="pg_catalog",
-        )
-        queue: asyncio.Queue = asyncio.Queue()
-
-        def on_notify(_c, _pid, _ch, _payload):
-            queue.put_nowait(None)
-
         try:
-            await conn.add_listener("chat_changed", on_notify)
-            yield f"data: {json.dumps({'messages': await _chat_history(conn)}, ensure_ascii=False)}\n\n"
+            yield f"data: {await _chat_snapshot()}\n\n"
             while True:
+                if await request.is_disconnected():
+                    return
                 try:
-                    await asyncio.wait_for(queue.get(), timeout=15.0)
+                    await asyncio.wait_for(queue.get(), timeout=_HEARTBEAT_TIMEOUT_S)
+                    await _drain_queue(queue)
+                    yield f"data: {await _chat_snapshot()}\n\n"
                 except asyncio.TimeoutError:
-                    yield ": ping\n\n"
-                    continue
-                while not queue.empty():
-                    queue.get_nowait()
-                yield f"data: {json.dumps({'messages': await _chat_history(conn)}, ensure_ascii=False)}\n\n"
+                    yield f"data: {_HEARTBEAT}\n\n"
         finally:
-            await conn.close()
+            fanout.unsubscribe(queue)
 
     return StreamingResponse(
         gen(),
