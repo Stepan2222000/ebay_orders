@@ -1,0 +1,47 @@
+.sidebar {
+  width: 320px;
+  flex-shrink: 0;
+  height: 100%;
+  background: var(--product-sidebar);
+  border-right: 1px solid var(--product-stroke);
+  display: flex;
+  flex-direction: column;
+  padding: 16px 14px;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 4px 0;
+  flex-shrink: 0;
+}
+
+.title {
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: 22px;
+  letter-spacing: -0.5px;
+  color: var(--on-dark-strong);
+  margin: 0;
+}
+
+.list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  padding-right: 2px;
+  margin-right: -2px;
+}
+
+.empty {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--on-dark-faint);
+  margin: 12px 4px 0;
+  line-height: 1.5;
+}

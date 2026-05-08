@@ -1,0 +1,47 @@
+.card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid var(--product-stroke);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+  font-family: var(--font-sans);
+  color: var(--on-dark-strong);
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.card:hover {
+  background: var(--product-overlay);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.thumb {
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  flex-shrink: 0;
+  border-radius: 6px;
+  background: var(--slate-800);
+}
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.order {
+  font-size: 12px;
+  color: var(--on-dark-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}

@@ -1,14 +1,21 @@
 """Стадия B — агентский цикл.
 
-run_agent_session(...) — общий вход.
-- Кладёт в LLM системный промпт (с pending снимками) + историю чата + новое user-сообщение.
-- Гоняет цикл tool-calling до finish_reason='stop' (без жёсткого лимита).
-- Возвращает массив parts ассистента (text + tool блоки) для записи в chat_messages.
+run_agent_session(...) — async generator, отдаёт события по мере работы:
+  - {"type":"text", "text": "..."}                          — реплика модели
+  - {"type":"tool_start", "id": ..., "name": ..., "arguments": ...}  — начало вызова
+  - {"type":"tool_done",  "id": ..., "name": ..., "arguments": ..., "result": ...} — итог
+  - {"type":"finish", "reason": "stop"|"error"|...}         — конец сессии
+
+API-handler пересобирает события в Data Stream Protocol AI SDK v6 и параллельно
+накапливает parts ассистента, чтобы записать их в chat_messages.
+
+Auto-trigger пользуется run_agent_session_collected — простой обёрткой, которая
+проигрывает события в memory и отдаёт parts списком.
 """
 import base64
 import json
 import logging
-from typing import Any
+from typing import Any, AsyncIterator
 
 import asyncpg
 import httpx
@@ -125,8 +132,8 @@ async def run_agent_session(
     user_text: str | None = None,
     user_files: list[tuple[bytes, str]] | None = None,
     auto_nudge: bool = False,
-) -> list[dict]:
-    """Returns parts ассистента для записи в chat_messages."""
+) -> AsyncIterator[dict]:
+    """Async generator: событие за событием. См. модульный docstring."""
     pending = await load_pending_snapshots(pool)
     system_prompt = build_stage_b_system(pending)
 
@@ -150,15 +157,15 @@ async def run_agent_session(
             "content": _build_user_content(user_text, user_files),
         })
 
-    parts: list[dict] = []
     step = 0
     while True:
         step += 1
         try:
             resp = await _call_llm(http, messages)
         except Exception as e:
-            parts.append({"type": "text", "text": f"Не получилось обратиться к модели: {e}"})
-            break
+            yield {"type": "text", "text": f"Не получилось обратиться к модели: {e}"}
+            yield {"type": "finish", "reason": "error"}
+            return
 
         choice = resp["choices"][0]
         msg = choice["message"]
@@ -168,11 +175,12 @@ async def run_agent_session(
                  step, finish, usage.get("cost"), resp.get("provider"))
 
         if msg.get("content"):
-            parts.append({"type": "text", "text": msg["content"]})
+            yield {"type": "text", "text": msg["content"]}
 
         tool_calls = msg.get("tool_calls") or []
         if not tool_calls:
-            break
+            yield {"type": "finish", "reason": finish or "stop"}
+            return
 
         messages.append({
             "role": "assistant",
@@ -183,17 +191,19 @@ async def run_agent_session(
         for tc in tool_calls:
             fn = tc["function"]
             name = fn["name"]
+            tc_id = tc["id"]
             raw_args = fn.get("arguments") or "{}"
             try:
                 args = json.loads(raw_args)
             except json.JSONDecodeError as e:
-                parts.append({"type": "tool", "name": name,
-                              "arguments": raw_args,
-                              "result": {"error": f"invalid tool arguments: {e}"}})
-                messages.append({"role": "tool", "tool_call_id": tc["id"],
-                                 "name": name,
+                err = {"error": f"invalid tool arguments: {e}"}
+                yield {"type": "tool_done", "id": tc_id, "name": name,
+                       "arguments": raw_args, "result": err}
+                messages.append({"role": "tool", "tool_call_id": tc_id, "name": name,
                                  "content": to_tool_content({"error": "invalid arguments"})})
                 continue
+
+            yield {"type": "tool_start", "id": tc_id, "name": name, "arguments": args}
 
             if name == "sql":
                 result = await execute_sql(pool, args.get("query", ""))
@@ -202,17 +212,56 @@ async def run_agent_session(
             else:
                 result = {"error": f"неизвестный инструмент: {name}"}
 
-            parts.append({"type": "tool", "name": name, "arguments": args, "result": result})
+            yield {"type": "tool_done", "id": tc_id, "name": name,
+                   "arguments": args, "result": result}
             messages.append({
                 "role": "tool",
-                "tool_call_id": tc["id"],
+                "tool_call_id": tc_id,
                 "name": name,
                 "content": to_tool_content(result),
             })
 
         if finish == "stop":
-            break
+            yield {"type": "finish", "reason": "stop"}
+            return
 
+
+def event_to_part(ev: dict) -> dict | None:
+    """Преобразует событие генератора в part для записи в chat_messages.
+
+    finish/tool_start не сохраняются: tool_start — служебный (мы сохраняем
+    только готовый tool_done), finish — терминатор без полезной нагрузки.
+    """
+    t = ev.get("type")
+    if t == "text":
+        return {"type": "text", "text": ev["text"]}
+    if t == "tool_done":
+        return {
+            "type": "tool",
+            "name": ev["name"],
+            "arguments": ev["arguments"],
+            "result": ev["result"],
+        }
+    return None
+
+
+async def run_agent_session_collected(
+    pool: asyncpg.Pool,
+    http: httpx.AsyncClient,
+    *,
+    user_text: str | None = None,
+    user_files: list[tuple[bytes, str]] | None = None,
+    auto_nudge: bool = False,
+) -> list[dict]:
+    """Не-стрим обёртка: проигрывает все события в память и отдаёт parts."""
+    parts: list[dict] = []
+    async for ev in run_agent_session(
+        pool, http,
+        user_text=user_text, user_files=user_files, auto_nudge=auto_nudge,
+    ):
+        p = event_to_part(ev)
+        if p is not None:
+            parts.append(p)
     return parts
 
 
@@ -226,6 +275,19 @@ VALUES ('default', 'assistant', $1);
 """
 
 
+def _ru_plural(n: int, forms: tuple[str, str, str]) -> str:
+    """forms = ('снимок', 'снимка', 'снимков')."""
+    n = abs(n) % 100
+    if 11 <= n <= 14:
+        return forms[2]
+    n %= 10
+    if n == 1:
+        return forms[0]
+    if 2 <= n <= 4:
+        return forms[1]
+    return forms[2]
+
+
 async def maybe_run_auto_trigger(pool: asyncpg.Pool, http: httpx.AsyncClient) -> bool:
     """Если есть pending снимки для B и нам удалось взять advisory-lock — запускаем агента.
     Возвращает True если агент действительно прогонялся.
@@ -236,14 +298,37 @@ async def maybe_run_auto_trigger(pool: asyncpg.Pool, http: httpx.AsyncClient) ->
     )
     if not n:
         return False
-    async with pool.acquire() as conn:
-        got = await conn.fetchval("SELECT pg_try_advisory_lock($1)", _TRIGGER_LOCK_KEY)
+
+    # Lock-соединение держим только пока работает агент. Финальную запись
+    # в chat_messages делаем уже на свежем соединении: долгие LLM-вызовы могут
+    # «протухнуть» удерживаемое соединение до момента INSERT.
+    parts: list[dict] = []
+    fired = False
+    async with pool.acquire() as lock_conn:
+        got = await lock_conn.fetchval("SELECT pg_try_advisory_lock($1)", _TRIGGER_LOCK_KEY)
         if not got:
             return False
         try:
             log.info("auto-trigger: pending=%d", n)
-            parts = await run_agent_session(pool, http, auto_nudge=True)
-            await conn.execute(_INSERT_AUTO_MSG_SQL, parts)
-            return True
+            # Стартовое сообщение в чат сразу — фронт через chat_changed NOTIFY
+            # сразу его подхватит и покажет, что агент проснулся.
+            sn_word = _ru_plural(n, ("снимок", "снимка", "снимков"))
+            start_parts = [
+                {"type": "text", "text": f"Вижу {n} {sn_word} в очереди — собираю заказы."}
+            ]
+            try:
+                await pool.execute(_INSERT_AUTO_MSG_SQL, start_parts)
+            except Exception as e:
+                log.error("auto-trigger: не удалось записать стартовое сообщение: %s", e)
+
+            parts = await run_agent_session_collected(pool, http, auto_nudge=True)
+            fired = True
         finally:
-            await conn.execute("SELECT pg_advisory_unlock($1)", _TRIGGER_LOCK_KEY)
+            try:
+                await lock_conn.execute("SELECT pg_advisory_unlock($1)", _TRIGGER_LOCK_KEY)
+            except Exception:
+                pass  # connection могла протухнуть — lock сам отпустится с её закрытием
+
+    if fired and parts:
+        await pool.execute(_INSERT_AUTO_MSG_SQL, parts)
+    return fired

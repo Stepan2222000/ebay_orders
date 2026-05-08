@@ -87,28 +87,39 @@ async def run() -> None:
     n = settings.worker_concurrency
     log.info("worker start; ocr_concurrency=%d, auto_trigger_idle=%.1fs", n, _AUTO_TRIGGER_IDLE_S)
 
+    # Стадия A — пул consumer-задач: пока есть свободный слот, забираем
+    # следующий pending screenshot и запускаем _process в фоне.
+    # Стадия B (auto-trigger) живёт в отдельной фоновой task — пока агент думает,
+    # main loop продолжает раздавать OCR новых скриншотов.
+    running: set[asyncio.Task] = set()
+    agent_task: asyncio.Task | None = None
     last_progress = time.monotonic()
+
+    async def safe_auto_trigger(p):
+        try:
+            await maybe_run_auto_trigger(p, http)
+        except Exception as e:
+            log.error("auto-trigger failed: %s", e)
+
     async with httpx.AsyncClient() as http:
         while True:
-            async with (await pool()).acquire() as conn:
-                rows = await conn.fetch(_CLAIM_SQL, n)
-            if rows:
-                log.info("claimed %d", len(rows))
-                await asyncio.gather(*(
-                    _process(http, r["sha256"], r["bytes"], r["mime_type"])
-                    for r in rows
-                ))
-                last_progress = time.monotonic()
-                continue
+            free = n - len(running)
+            rows: list = []
+            if free > 0:
+                async with (await pool()).acquire() as conn:
+                    rows = await conn.fetch(_CLAIM_SQL, free)
+                for r in rows:
+                    t = asyncio.create_task(_process(http, r["sha256"], r["bytes"], r["mime_type"]))
+                    running.add(t)
+                    t.add_done_callback(running.discard)
 
-            idle = time.monotonic() - last_progress
-            if idle >= _AUTO_TRIGGER_IDLE_S:
-                try:
-                    fired = await maybe_run_auto_trigger(await pool(), http)
-                except Exception as e:
-                    log.error("auto-trigger failed: %s", e)
-                    fired = False
-                if fired:
+            if rows or running:
+                last_progress = time.monotonic()
+            else:
+                idle = time.monotonic() - last_progress
+                if idle >= _AUTO_TRIGGER_IDLE_S and (agent_task is None or agent_task.done()):
+                    p = await pool()
+                    agent_task = asyncio.create_task(safe_auto_trigger(p))
                     last_progress = time.monotonic()
 
             await asyncio.sleep(settings.worker_idle_sleep_s)

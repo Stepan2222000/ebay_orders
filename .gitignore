@@ -1,4 +1,5 @@
 .env
+.env.*.local
 .DS_Store
 __pycache__/
 *.pyc
@@ -19,3 +20,8 @@ test_photos/
 backups/
 dogfood-output/
 logs/
+tmp/
+
+# Frontend build artifacts
+frontend/.next/
+frontend/tsconfig.tsbuildinfo

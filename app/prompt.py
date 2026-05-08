@@ -19,6 +19,10 @@ SYSTEM_PROMPT_STAGE_A = (
     "размыто), оставь соответствующее поле null и добавь короткую заметку в массив "
     "unreadable.\n"
     "\n"
+    "sold_by — это eBay-username из строки `Sold by:` в Order info. "
+    "Имя физлица и адрес из блока Seller info игнорируй: если на снимке нет строки "
+    "`Sold by:`, ставь sold_by=null.\n"
+    "\n"
     "Ответ — строго JSON по приложенной схеме, без комментариев и любого текста вне JSON."
 )
 
@@ -74,6 +78,9 @@ item_number или название товара, tracking_number, сервис 
 Только USD. Если виден текст в другой валюте без USD-эквивалента — не сохраняй заказ,
 помечай снимки как failed с причиной «другая валюта без USD».
 Free для доставки = 0.00.
+
+# Продавец
+sold_by — eBay-username из «Sold by:», не юр.имя из Seller info. Эти двое — один продавец.
 
 # Схема БД (важные колонки)
 orders(order_id, order_number UNIQUE, sold_by, ordered_at timestamptz,
