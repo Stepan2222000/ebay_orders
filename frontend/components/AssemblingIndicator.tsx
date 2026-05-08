@@ -6,9 +6,10 @@ import { useSSE } from "@/lib/sse";
 import type { Stats } from "@/lib/types";
 import styles from "./AssemblingIndicator.module.css";
 
-// В шапке чата. Виден пока есть активная сессия и в ней что-то делается.
-// Источник — общий /api/status/stream (useSSE). Цифры — agent_total / done / failed
-// из _status_dict (count screenshots по agent_status).
+// Pill в шапке чата. Источник — общий /api/status/stream.
+// Видим, только если есть распознанные снимки, ожидающие сборки в заказы.
+// Источник числа — assembling (count where ocr_status='done'
+// AND agent_status IN ('pending','running')).
 export default function AssemblingIndicator() {
   const [s, setS] = useState<Stats | null>(null);
 
@@ -17,15 +18,14 @@ export default function AssemblingIndicator() {
     setS(data as Stats);
   });
 
-  if (!s || !s.agent_active || s.agent_total === 0) return null;
+  if (!s || s.assembling === 0) return null;
 
   return (
     <span className={styles.pill} data-testid="assembling-indicator">
       <span className={styles.spark}>
         <Sparkles size={12} />
       </span>
-      Обработано {s.agent_done}/{s.agent_total}
-      {s.agent_failed > 0 ? ` · ошибок ${s.agent_failed}` : ""}
+      Новых снимков: {s.assembling}
     </span>
   );
 }

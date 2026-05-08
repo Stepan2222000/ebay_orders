@@ -10,8 +10,8 @@ export default function Composer({
   disabled,
 }: {
   onSend: (args: { text: string; files: File[] }) => void;
-  onStop: () => void;
-  busy: boolean;
+  onStop?: () => void;
+  busy?: boolean;
   disabled?: boolean;
 }) {
   const [text, setText] = useState("");

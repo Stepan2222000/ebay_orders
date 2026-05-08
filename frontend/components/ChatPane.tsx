@@ -4,8 +4,6 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import type { UIMessage } from "ai";
 import { API, resetChat as resetChatApi } from "@/lib/api";
-import { useSSE } from "@/lib/sse";
-import type { Stats } from "@/lib/types";
 import AssemblingIndicator from "./AssemblingIndicator";
 import ConfirmDialog from "./ConfirmDialog";
 import Composer from "./Composer";
@@ -20,32 +18,20 @@ interface PersistedMessage {
   created_at: string;
 }
 
-function persistedPartToUIPart(p: any, idx: number): any {
+function persistedPartToUIPart(p: any): any {
   if (p.type === "text") return { type: "text", text: p.text };
   if (p.type === "file") {
     return { type: "file", mediaType: p.mime, url: p.data_url };
   }
-  // Уже AI SDK-формат: tool-NAME с toolCallId/state/input/output — пропускаем как есть.
   if (typeof p.type === "string" && p.type.startsWith("tool-")) {
     return p;
-  }
-  // Старый формат БД: {type:"tool", name, arguments, result} — конвертируем.
-  if (p.type === "tool" && p.name) {
-    const errored = p.result && typeof p.result === "object" && "error" in p.result;
-    return {
-      type: `tool-${p.name}`,
-      toolCallId: `persisted-${idx}-${p.name}`,
-      state: errored ? "output-error" : "output-available",
-      input: p.arguments,
-      output: p.result,
-    };
   }
   return null;
 }
 
 function persistedToUIMessage(m: PersistedMessage): UIMessage {
   const parts = (m.parts || [])
-    .map((p, i) => persistedPartToUIPart(p, i))
+    .map((p) => persistedPartToUIPart(p))
     .filter(Boolean);
   return { id: String(m.id), role: m.role, parts } as UIMessage;
 }
@@ -118,34 +104,13 @@ export default function ChatPane() {
 }
 
 function ChatInner({ initialMessages }: { initialMessages: UIMessage[] }) {
-  // useChat — UI-обёртка для рендера messages и отправки sendMessage. Сам стрим
-  // ответа агента не нужен: POST /chat/messages возвращает 200 OK, useChat
-  // считает запрос завершённым; ответ агента приезжает воркером и догоняется
-  // через /api/chat/stream → setMessages.
   const transport = useRef(
-    new DefaultChatTransport({ api: `${API}/chat/messages` }),
+    new DefaultChatTransport({ api: `${API}/chat` }),
   ).current;
 
-  const { messages, sendMessage, setMessages } = useChat({
+  const { messages, sendMessage } = useChat({
     transport,
     messages: initialMessages,
-  });
-
-  // agent_active — единственный источник истины для Stop/Composer.busy.
-  const [agentActive, setAgentActive] = useState(false);
-
-  useSSE(`${API}/status/stream`, (data) => {
-    if (!data || typeof data !== "object") return;
-    setAgentActive(!!(data as Stats).agent_active);
-  });
-
-  // /api/chat/stream — снапшот всех messages при каждом NOTIFY chat_changed.
-  useSSE(`${API}/chat/stream`, (data) => {
-    if (!data || typeof data !== "object") return;
-    const list = (data as { messages?: PersistedMessage[] }).messages;
-    if (!Array.isArray(list)) return;
-    const ui = list.map((m) => persistedToUIMessage(m));
-    setMessages(ui);
   });
 
   const threadRef = useRef<HTMLDivElement | null>(null);
@@ -153,11 +118,9 @@ function ChatInner({ initialMessages }: { initialMessages: UIMessage[] }) {
     const el = threadRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages, agentActive]);
+  }, [messages]);
 
   const onSend = ({ text, files }: { text: string; files: File[] }) => {
-    // Send во время работы агента: API сам ставит agent_run.stop_requested=true,
-    // воркер аккуратно прервёт текущую и тут же стартует новую с этим user-сообщением.
     let fileList: FileList | undefined;
     if (files.length) {
       const dt = new DataTransfer();
@@ -167,14 +130,6 @@ function ChatInner({ initialMessages }: { initialMessages: UIMessage[] }) {
     sendMessage({ text, files: fileList });
   };
 
-  const onStop = async () => {
-    try {
-      await fetch(`${API}/agent/stop`, { method: "POST" });
-    } catch {
-      /* банер «связь потеряна» сам покажется */
-    }
-  };
-
   return (
     <>
       <div className={styles.thread} ref={threadRef} data-testid="thread">
@@ -182,12 +137,11 @@ function ChatInner({ initialMessages }: { initialMessages: UIMessage[] }) {
           <p className={styles.empty}>Начните разговор или дроп скриншоты в сайдбар.</p>
         ) : (
           <div className={styles.threadInner}>
-            {messages.map((m, i) => (
+            {messages.map((m) => (
               <Message
                 key={m.id}
                 role={m.role as any}
                 parts={(m as any).parts ?? []}
-                streaming={agentActive && i === messages.length - 1 && m.role === "assistant"}
               />
             ))}
           </div>
@@ -195,7 +149,7 @@ function ChatInner({ initialMessages }: { initialMessages: UIMessage[] }) {
       </div>
 
       <footer className={styles.composerWrap}>
-        <Composer onSend={onSend} onStop={onStop} busy={agentActive} />
+        <Composer onSend={onSend} />
       </footer>
     </>
   );

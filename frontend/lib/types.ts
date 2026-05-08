@@ -6,12 +6,8 @@ export interface Stats {
   running: number;
   done: number;
   failed: number;
-  /** скриншоты с ocr_status=done и agent_status в работе/ожидании (агент сейчас собирает заказы) */
+  /** скриншоты с ocr_status=done и agent_status в работе/ожидании (есть, что обработать) */
   assembling: number;
-  /** есть ли активная агентская сессия (agent_run.finished_at IS NULL) */
-  agent_active: boolean;
-  /** идёт ли сейчас LLM-вызов внутри активной сессии */
-  agent_thinking: boolean;
   /** общее число снимков, попавших в стадию B хотя бы раз */
   agent_total: number;
   /** из них собрано в заказы */
