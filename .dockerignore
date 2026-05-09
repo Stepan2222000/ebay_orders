@@ -1,0 +1,21 @@
+# корневой context для backend-сборки — отсекаем всё лишнее
+.git
+.gitignore
+.venv
+.venv-probe
+__pycache__
+*.pyc
+.pytest_cache
+last_photos
+test_photos
+tmp
+.claude
+.codex
+.env
+.env.example
+node_modules
+frontend
+.DS_Store
+*.log
+docs
+.txt

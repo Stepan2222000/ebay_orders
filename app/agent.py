@@ -118,7 +118,9 @@ async def stream_stage_b(
             assistant_msg["reasoning_details"] = rd
         messages_for_model.append(assistant_msg)
 
-        # tool-input-* в порядке модели; parts_acc копит плашки с input
+        # tool-input-* в порядке модели; держим прямые ссылки на плашки
+        # для O(1) обновления state/output по мере готовности.
+        plate_by_id: dict[str, dict] = {}
         for tc in tool_calls:
             yield {
                 "type": "tool-input-start",
@@ -131,12 +133,14 @@ async def stream_stage_b(
                 "toolName": tc["name"],
                 "input": tc["arguments"],
             }
-            parts_acc.append({
+            plate = {
                 "type": f"tool-{tc['name']}",
                 "toolCallId": tc["id"],
                 "state": "input-available",
                 "input": tc["arguments"],
-            })
+            }
+            parts_acc.append(plate)
+            plate_by_id[tc["id"]] = plate
 
         async def run_one(tc: dict):
             async with semaphore:
@@ -153,11 +157,9 @@ async def stream_stage_b(
                 "toolCallId": tc["id"],
                 "output": result,
             }
-            for p in parts_acc:
-                if p.get("toolCallId") == tc["id"]:
-                    p["state"] = "output-error" if errored else "output-available"
-                    p["output"] = result
-                    break
+            plate = plate_by_id[tc["id"]]
+            plate["state"] = "output-error" if errored else "output-available"
+            plate["output"] = result
             messages_for_model.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],

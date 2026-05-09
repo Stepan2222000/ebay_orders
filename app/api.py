@@ -14,6 +14,7 @@ asyncpg-коннектом держит LISTEN на status_changed. Подпис
 import asyncio
 import json
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 
@@ -61,13 +62,16 @@ async def lifespan(app: FastAPI):
         await close()
 
 
+_cors_origins_raw = os.environ.get(
+    "CORS_ORIGINS",
+    "http://localhost:3050,http://127.0.0.1:3050",
+)
+_cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3050",
-        "http://127.0.0.1:3050",
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

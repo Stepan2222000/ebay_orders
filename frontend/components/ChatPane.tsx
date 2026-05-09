@@ -70,25 +70,7 @@ export default function ChatPane() {
   return (
     <section className={styles.pane} data-testid="chat-pane">
       {history === null ? (
-        <>
-          <header className={styles.header}>
-            <div className={styles.headerLeft}>
-              <span className={styles.brand}>eBay orders.</span>
-            </div>
-            <div className={styles.headerActions}>
-              <ThemeToggle />
-              <button
-                type="button"
-                className={styles.resetBtn}
-                data-testid="reset-chat"
-                disabled
-              >
-                Сбросить чат
-              </button>
-            </div>
-          </header>
-          <div className={styles.loading}>Загружаю историю…</div>
-        </>
+        <div className={styles.loading}>Загружаю историю…</div>
       ) : (
         <ChatInner
           key={resetKey}

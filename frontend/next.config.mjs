@@ -1,9 +1,9 @@
 /** @type {import('next').NextConfig} */
-const isProd = process.env.NODE_ENV === "production";
-
 const config = {
-  // Только клиент-сайд — без SSR. В prod собираем static export, FastAPI отдаёт его сам.
-  output: isProd ? "export" : undefined,
+  // Production-сборка через standalone — даёт минимальный self-contained Node-bundle
+  // (frontend/.next/standalone + статика), который запускается командой `node server.js`
+  // в production-контейнере. Dev по-прежнему обычный `next dev`.
+  output: process.env.NODE_ENV === "production" ? "standalone" : undefined,
 };
 
 export default config;

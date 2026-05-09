@@ -1,0 +1,40 @@
+services:
+  api:
+    image: ghcr.io/stepan2222000/ebay-orders-backend:${IMAGE_TAG:-latest}
+    container_name: ebay_orders_api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      API_PORT: "8000"
+      CORS_ORIGINS: "http://2.26.53.128:3050"
+    ports:
+      - "3051:8000"
+    networks:
+      - db_default
+    command: ["python", "-m", "app", "api"]
+
+  worker:
+    image: ghcr.io/stepan2222000/ebay-orders-backend:${IMAGE_TAG:-latest}
+    container_name: ebay_orders_worker
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - db_default
+    command: ["python", "-m", "app", "worker"]
+    depends_on:
+      - api
+
+  web:
+    image: ghcr.io/stepan2222000/ebay-orders-frontend:${IMAGE_TAG:-latest}
+    container_name: ebay_orders_web
+    restart: unless-stopped
+    ports:
+      - "3050:3000"
+    networks:
+      - db_default
+    depends_on:
+      - api
+
+networks:
+  db_default:
+    external: true
