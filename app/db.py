@@ -33,6 +33,7 @@ async def pool() -> asyncpg.Pool:
             database=settings.pg_database,
             min_size=1,
             max_size=40,
+            max_inactive_connection_lifetime=60,
             init=_init_conn,
         )
     return _pool

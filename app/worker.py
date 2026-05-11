@@ -9,6 +9,7 @@
 import asyncio
 import logging
 
+import asyncpg
 import httpx
 
 from .config import settings
@@ -89,13 +90,24 @@ async def run() -> None:
         while True:
             free = n - len(running)
             if free > 0:
-                async with (await pool()).acquire() as conn:
-                    rows = await conn.fetch(_CLAIM_SQL, free)
-                for r in rows:
-                    t = asyncio.create_task(
-                        _process(http, r["sha256"], r["bytes"], r["mime_type"])
-                    )
-                    running.add(t)
-                    t.add_done_callback(running.discard)
+                try:
+                    async with (await pool()).acquire() as conn:
+                        rows = await conn.fetch(_CLAIM_SQL, free)
+                    for r in rows:
+                        t = asyncio.create_task(
+                            _process(http, r["sha256"], r["bytes"], r["mime_type"])
+                        )
+                        running.add(t)
+                        t.add_done_callback(running.discard)
+                except (
+                    asyncpg.exceptions.ConnectionDoesNotExistError,
+                    asyncpg.exceptions.InterfaceError,
+                    asyncpg.exceptions.PostgresConnectionError,
+                    ConnectionError,
+                    OSError,
+                ) as e:
+                    log.warning("worker claim failed: %s; retrying", e)
+                    await asyncio.sleep(2.0)
+                    continue
 
             await asyncio.sleep(settings.worker_idle_sleep_s)
