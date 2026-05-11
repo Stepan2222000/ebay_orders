@@ -16,8 +16,11 @@ export async function fetchStats(): Promise<Stats> {
   return jsonFetch<Stats>("/status");
 }
 
-export async function fetchScreenshots(): Promise<Screenshot[]> {
-  const data = await jsonFetch<{ screenshots: Screenshot[] }>("/screenshots");
+export async function fetchScreenshots(q?: string): Promise<Screenshot[]> {
+  const path = q && q.trim()
+    ? `/screenshots?q=${encodeURIComponent(q.trim())}`
+    : "/screenshots";
+  const data = await jsonFetch<{ screenshots: Screenshot[] }>(path);
   return data.screenshots;
 }
 

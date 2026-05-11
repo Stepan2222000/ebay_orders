@@ -4,11 +4,25 @@ import type { Screenshot } from "@/lib/types";
 import StatusPill from "./StatusPill";
 import styles from "./ScreenshotCard.module.css";
 
+function Highlight({ text, query }: { text: string; query: string }) {
+  const i = text.toLowerCase().indexOf(query.toLowerCase());
+  if (i < 0) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, i)}
+      <mark className={styles.mark}>{text.slice(i, i + query.length)}</mark>
+      {text.slice(i + query.length)}
+    </>
+  );
+}
+
 export default function ScreenshotCard({
   screenshot,
+  query,
   onClick,
 }: {
   screenshot: Screenshot;
+  query?: string;
   onClick: (s: Screenshot) => void;
 }) {
   const s = screenshot;
@@ -34,6 +48,11 @@ export default function ScreenshotCard({
         <span className={styles.order}>
           {s.order_number ? `#${s.order_number}` : "пока не привязан"}
         </span>
+        {s.match && query ? (
+          <span className={styles.snippet} data-testid="screenshot-match">
+            <Highlight text={s.match} query={query} />
+          </span>
+        ) : null}
       </div>
     </button>
   );

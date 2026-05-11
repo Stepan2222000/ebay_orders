@@ -28,6 +28,29 @@
   margin: 0;
 }
 
+.search {
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--product-stroke);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--on-dark-strong);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.search::placeholder {
+  color: var(--on-dark-faint);
+}
+
+.search:focus {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .list {
   flex: 1;
   display: flex;

@@ -211,30 +211,94 @@ async def upload(files: list[UploadFile]):
     return {"screenshots": out}
 
 
+_SNIPPET_PAD = 60
+_SEARCH_LIMIT = 500
+
+
+def _match_snippet(query: str, *texts: str | None) -> str | None:
+    """Найти первое вхождение query в любом из text-полей (case-insensitive).
+    Вернуть кусок ±_SNIPPET_PAD символов с многоточиями по краям."""
+    needle = query.lower()
+    for src in texts:
+        if not src:
+            continue
+        i = src.lower().find(needle)
+        if i < 0:
+            continue
+        start = max(0, i - _SNIPPET_PAD)
+        end = min(len(src), i + len(query) + _SNIPPET_PAD)
+        snippet = src[start:end].replace("\n", " ").strip()
+        if start > 0:
+            snippet = "…" + snippet
+        if end < len(src):
+            snippet = snippet + "…"
+        return snippet
+    return None
+
+
 @api.get("/screenshots")
-async def list_screenshots():
+async def list_screenshots(q: str | None = None):
+    q_clean = (q or "").strip()
+    if not q_clean:
+        rows = await (await pool()).fetch(
+            """
+            SELECT
+                encode(s.sha256, 'hex') AS sha,
+                s.ocr_status::text       AS ocr_status,
+                s.agent_status::text     AS agent_status,
+                s.last_error,
+                s.byte_size,
+                s.mime_type,
+                s.created_at,
+                o.order_number
+            FROM screenshots s
+            LEFT JOIN orders o ON o.order_id = s.order_id
+            ORDER BY s.created_at DESC
+            """
+        )
+        return {
+            "screenshots": [
+                {**dict(r), "created_at": r["created_at"].isoformat()}
+                for r in rows
+            ]
+        }
+
+    pat = f"%{q_clean}%"
     rows = await (await pool()).fetch(
         """
         SELECT
-            encode(s.sha256, 'hex') AS sha,
-            s.ocr_status::text       AS ocr_status,
-            s.agent_status::text     AS agent_status,
+            encode(s.sha256, 'hex')          AS sha,
+            s.ocr_status::text                AS ocr_status,
+            s.agent_status::text              AS agent_status,
             s.last_error,
             s.byte_size,
             s.mime_type,
             s.created_at,
-            o.order_number
+            o.order_number,
+            o.sold_by,
+            r.raw_json->>'visible_text'       AS visible_text
         FROM screenshots s
-        LEFT JOIN orders o ON o.order_id = s.order_id
+        LEFT JOIN orders  o ON o.order_id = s.order_id
+        LEFT JOIN raw_ocr r ON r.sha256   = s.sha256
+        WHERE r.raw_json::text ILIKE $1
+           OR o.order_number   ILIKE $1
+           OR o.sold_by        ILIKE $1
         ORDER BY s.created_at DESC
-        """
+        LIMIT $2
+        """,
+        pat, _SEARCH_LIMIT,
     )
-    return {
-        "screenshots": [
-            {**dict(r), "created_at": r["created_at"].isoformat()}
-            for r in rows
-        ]
-    }
+
+    out = []
+    for r in rows:
+        d = dict(r)
+        snippet = _match_snippet(
+            q_clean, d.pop("visible_text", None), d.pop("sold_by", None), d.get("order_number"),
+        )
+        d["match"] = snippet
+        d["created_at"] = r["created_at"].isoformat()
+        out.append(d)
+    return {"screenshots": out}
 
 
 @api.get("/screenshots/{sha}")

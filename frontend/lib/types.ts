@@ -25,6 +25,8 @@ export interface Screenshot {
   mime_type: string;
   created_at: string;
   order_number: string | null;
+  /** сниппет вокруг совпадения. Возвращается только когда передан ?q= */
+  match?: string | null;
 }
 
 export interface ScreenshotDetail extends Screenshot {
