@@ -360,18 +360,52 @@ async def screenshot_delete(sha: str):
 
 @api.post("/screenshots/{sha}/retry")
 async def screenshot_retry(sha: str):
-    """Повторно прогнать стадию A: снять raw_ocr, отвязать от заказа,
-    сбросить статусы в pending. Воркер сам подберёт снимок."""
+    """Повторно прогнать стадию A.
+
+    Что делает:
+    - если снимок привязан к заказу — удаляет сам заказ (каскад снимет
+      товары/возвраты/треки, FK SET NULL отвяжет все его скриншоты),
+      затем возвращает остальные скриншоты этого заказа в очередь сборки
+      (agent_status='pending'), чтобы агент пересобрал заказ заново;
+    - удаляет raw_ocr этого снимка;
+    - сбрасывает ocr_status/agent_status в pending, last_error в NULL.
+
+    Воркер сам подберёт снимок.
+    """
     sha_b = _parse_sha(sha)
     p = await pool()
     async with p.acquire() as conn:
         async with conn.transaction():
             row = await conn.fetchrow(
-                "SELECT ocr_status::text AS ocr_status FROM screenshots "
-                "WHERE sha256=$1 FOR UPDATE", sha_b,
+                "SELECT order_id FROM screenshots WHERE sha256=$1 FOR UPDATE",
+                sha_b,
             )
             if row is None:
                 raise HTTPException(404, "не найдено")
+            old_order_id = row["order_id"]
+
+            if old_order_id is not None:
+                # источник для audit_trg, чтобы DELETE заказа отметился в журнале
+                await conn.execute(
+                    "SELECT set_config('app.source', 'user_chat', true)"
+                )
+                sibling_shas = await conn.fetch(
+                    "SELECT sha256 FROM screenshots "
+                    "WHERE order_id=$1 AND sha256 <> $2",
+                    old_order_id, sha_b,
+                )
+                # каскад снесёт items/refunds/tracks; FK SET NULL обнулит
+                # screenshots.order_id для всех связанных снимков
+                await conn.execute(
+                    "DELETE FROM orders WHERE order_id=$1", old_order_id
+                )
+                if sibling_shas:
+                    await conn.execute(
+                        "UPDATE screenshots SET agent_status='pending' "
+                        "WHERE sha256 = ANY($1::bytea[])",
+                        [r["sha256"] for r in sibling_shas],
+                    )
+
             await conn.execute("DELETE FROM raw_ocr WHERE sha256=$1", sha_b)
             await conn.execute(
                 "UPDATE screenshots SET "
@@ -380,7 +414,7 @@ async def screenshot_retry(sha: str):
                 "WHERE sha256=$1",
                 sha_b,
             )
-    return {"retried": sha}
+    return {"retried": sha, "deleted_order_id": old_order_id}
 
 
 # ─── Stage B: история чата + POST /api/chat ──────────────────────────────
