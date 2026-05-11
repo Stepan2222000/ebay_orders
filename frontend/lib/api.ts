@@ -38,6 +38,10 @@ export async function deleteScreenshot(sha: string): Promise<void> {
   await jsonFetch(`/screenshots/${sha}`, { method: "DELETE" });
 }
 
+export async function retryScreenshot(sha: string): Promise<void> {
+  await jsonFetch(`/screenshots/${sha}/retry`, { method: "POST" });
+}
+
 export async function resetChat(): Promise<{ deleted: number }> {
   return jsonFetch<{ deleted: number }>("/chat/reset", { method: "POST" });
 }

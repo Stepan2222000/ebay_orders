@@ -83,6 +83,7 @@ export default function Sidebar() {
             setOpenSha(null);
             reload();
           }}
+          onRetried={reload}
         />
       ) : null}
     </aside>

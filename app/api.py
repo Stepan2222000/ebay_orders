@@ -358,6 +358,31 @@ async def screenshot_delete(sha: str):
     return {"deleted": sha}
 
 
+@api.post("/screenshots/{sha}/retry")
+async def screenshot_retry(sha: str):
+    """Повторно прогнать стадию A: снять raw_ocr, отвязать от заказа,
+    сбросить статусы в pending. Воркер сам подберёт снимок."""
+    sha_b = _parse_sha(sha)
+    p = await pool()
+    async with p.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT ocr_status::text AS ocr_status FROM screenshots "
+                "WHERE sha256=$1 FOR UPDATE", sha_b,
+            )
+            if row is None:
+                raise HTTPException(404, "не найдено")
+            await conn.execute("DELETE FROM raw_ocr WHERE sha256=$1", sha_b)
+            await conn.execute(
+                "UPDATE screenshots SET "
+                "ocr_status='pending', agent_status='pending', "
+                "last_error=NULL, order_id=NULL "
+                "WHERE sha256=$1",
+                sha_b,
+            )
+    return {"retried": sha}
+
+
 # ─── Stage B: история чата + POST /api/chat ──────────────────────────────
 
 _CHAT_HISTORY_SQL = (

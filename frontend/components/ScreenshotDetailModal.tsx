@@ -1,7 +1,12 @@
 "use client";
 import { useEffect, useState } from "react";
-import { X, Trash2 } from "lucide-react";
-import { deleteScreenshot, fetchScreenshotDetail, imageUrl } from "@/lib/api";
+import { X, Trash2, RotateCw } from "lucide-react";
+import {
+  deleteScreenshot,
+  fetchScreenshotDetail,
+  imageUrl,
+  retryScreenshot,
+} from "@/lib/api";
 import type { ScreenshotDetail } from "@/lib/types";
 import StatusPill from "./StatusPill";
 import ConfirmDialog from "./ConfirmDialog";
@@ -42,15 +47,21 @@ export default function ScreenshotDetailModal({
   sha,
   onClose,
   onDeleted,
+  onRetried,
 }: {
   sha: string;
   onClose: () => void;
   onDeleted: () => void;
+  onRetried?: () => void;
 }) {
   const [data, setData] = useState<ScreenshotDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
+  const [retryConfirm, setRetryConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  const inProgress =
+    data?.ocr_status === "pending" || data?.ocr_status === "running";
 
   useEffect(() => {
     let cancelled = false;
@@ -61,6 +72,23 @@ export default function ScreenshotDetailModal({
       cancelled = true;
     };
   }, [sha]);
+
+  useEffect(() => {
+    if (!inProgress) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const d = await fetchScreenshotDetail(sha);
+        if (!cancelled) setData(d);
+      } catch {
+        // молча: следующий тик попробует ещё раз
+      }
+    }, 1500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [sha, inProgress]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -84,6 +112,30 @@ export default function ScreenshotDetailModal({
     } catch (e) {
       setErr((e as Error).message);
       setBusy(false);
+    }
+  };
+
+  const doRetry = async () => {
+    setBusy(true);
+    setRetryConfirm(false);
+    setErr(null);
+    try {
+      await retryScreenshot(sha);
+      const d = await fetchScreenshotDetail(sha);
+      setData(d);
+      onRetried?.();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onRetryClick = () => {
+    if (data?.order_number) {
+      setRetryConfirm(true);
+    } else {
+      void doRetry();
     }
   };
 
@@ -224,9 +276,25 @@ export default function ScreenshotDetailModal({
             <Trash2 size={16} />
             Удалить
           </button>
-          <button className={styles.closeText} onClick={onClose}>
-            Закрыть
-          </button>
+          <div className={styles.footerRight}>
+            <button
+              className={styles.retryBtn}
+              onClick={onRetryClick}
+              disabled={busy || inProgress || !data}
+              data-testid="detail-retry"
+              title={
+                inProgress
+                  ? "OCR ещё идёт"
+                  : "Удалить распознанные данные и прогнать стадию A заново"
+              }
+            >
+              <RotateCw size={16} className={inProgress ? styles.spin : undefined} />
+              {inProgress ? "Идёт OCR…" : "Повторить OCR"}
+            </button>
+            <button className={styles.closeText} onClick={onClose}>
+              Закрыть
+            </button>
+          </div>
         </div>
       </div>
 
@@ -238,6 +306,21 @@ export default function ScreenshotDetailModal({
           destructive
           onConfirm={doDelete}
           onCancel={() => setConfirm(false)}
+        />
+      ) : null}
+
+      {retryConfirm ? (
+        <ConfirmDialog
+          title="Повторить OCR?"
+          body={
+            data?.order_number
+              ? `Скриншот связан с заказом #${data.order_number}. Связь будет снята, текущие распознанные поля удалены, снимок встанет в очередь на повторное распознавание. Сам заказ останется — удалите его через чат, если он ошибочный.`
+              : "Текущие распознанные поля будут удалены, снимок встанет в очередь."
+          }
+          confirmLabel="Повторить"
+          destructive
+          onConfirm={doRetry}
+          onCancel={() => setRetryConfirm(false)}
         />
       ) : null}
     </div>
