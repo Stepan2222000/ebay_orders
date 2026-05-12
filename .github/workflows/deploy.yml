@@ -12,7 +12,7 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   IMAGE_OWNER: stepan2222000
-  PUBLIC_API_BASE: http://2.26.53.128:3051
+  PUBLIC_API_BASE: http://194.164.245.107:3051
 
 jobs:
   build:

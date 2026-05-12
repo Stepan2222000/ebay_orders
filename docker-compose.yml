@@ -6,7 +6,7 @@ services:
     env_file: .env
     environment:
       API_PORT: "8000"
-      CORS_ORIGINS: "http://2.26.53.128:3050"
+      CORS_ORIGINS: "http://194.164.245.107:3050"
     ports:
       - "3051:8000"
     networks:
@@ -28,6 +28,8 @@ services:
     image: ghcr.io/stepan2222000/ebay-orders-frontend:${IMAGE_TAG:-latest}
     container_name: ebay_orders_web
     restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_BASE: "http://194.164.245.107:3051"
     ports:
       - "3050:3000"
     networks:
