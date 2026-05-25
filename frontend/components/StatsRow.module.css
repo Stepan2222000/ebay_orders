@@ -46,3 +46,14 @@
 .failed .num {
   color: var(--error-product);
 }
+
+.matchRow {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  width: 100%;
+  margin-top: 6px;
+}
+.match .num {
+  color: var(--brand-coral);
+}

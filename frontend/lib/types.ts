@@ -14,6 +14,14 @@ export interface Stats {
   agent_done: number;
   /** из них помечено failed */
   agent_failed: number;
+  /** листинги без артикула в каталоге, ждут пополнения каталога */
+  match_not_in_catalog: number;
+  /** листинги, требующие ручного разбора (бандл / нет кандидата) */
+  match_needs_review: number;
+  /** листинги, ещё не прогнанные матчером (матчинг был отложен) */
+  match_pending: number;
+  /** листинги, помеченные «нет артикула» вручную */
+  match_no_article: number;
 }
 
 export interface Screenshot {
