@@ -1,5 +1,7 @@
 """Системные промпты. Единственное место в коде, где они живут."""
 
+from .validation import IDENTIFIER_FORMATS_HINT
+
 # ─── Стадия A: распознавание одного снимка ─────────────────────────────────
 
 SYSTEM_PROMPT_STAGE_A = (
@@ -24,6 +26,7 @@ SYSTEM_PROMPT_STAGE_A = (
     "`Sold by:`, ставь sold_by=null.\n"
     "\n"
     "Ответ — строго JSON по приложенной схеме, без комментариев и любого текста вне JSON."
+    "\n\n" + IDENTIFIER_FORMATS_HINT
 )
 
 

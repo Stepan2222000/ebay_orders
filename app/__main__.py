@@ -4,9 +4,10 @@ import json
 import os
 import sys
 
-import httpx
 import uvicorn
+from openai import AsyncOpenAI
 
+from .config import settings
 from .ocr import OcrError, transcribe
 from .util import detect_mime
 from .worker import run as worker_run
@@ -25,16 +26,19 @@ async def _ocr_one(path: str) -> int:
     if mime is None:
         print(f"{path}: not png/jpeg/webp/gif", file=sys.stderr)
         return 3
-    async with httpx.AsyncClient() as http:
+    async with AsyncOpenAI(
+        base_url=settings.openai_base_url,
+        api_key=settings.openai_api_key,
+        timeout=settings.llm_timeout_s,
+    ) as client:
         try:
-            res = await transcribe(data, mime, http)
+            res = await transcribe(data, mime, client)
         except OcrError as e:
             print(f"FAIL: {e}", file=sys.stderr)
             return 4
     print(json.dumps({
         "model": res.model,
         "latency_s": round(res.latency_s, 2),
-        "cost_usd": res.cost_usd,
         "raw_json": res.raw_json,
     }, indent=2, ensure_ascii=False))
     return 0

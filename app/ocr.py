@@ -1,18 +1,22 @@
 """Стадия A — один скриншот → сырой JSON.
 
-Один публичный вызов: ocr.transcribe(bytes, mime, http_client).
+Один публичный вызов: ocr.transcribe(bytes, mime, client).
 Все ошибки — OcrError с короткой человеческой причиной.
 """
 import base64
 import json
+import logging
 import time
 from dataclasses import dataclass
 
-import httpx
+from openai import APIError, AsyncOpenAI
 
 from .config import settings
 from .prompt import SYSTEM_PROMPT_STAGE_A
 from .schema import RAW_OCR_SCHEMA
+from .validation import bad_tracking_reason, is_valid_order_number
+
+log = logging.getLogger(__name__)
 
 
 class OcrError(Exception):
@@ -23,64 +27,89 @@ class OcrError(Exception):
 class OcrResult:
     raw_json: dict
     model: str
-    cost_usd: float | None
     latency_s: float
 
 
-def _payload(image_bytes: bytes, mime: str) -> dict:
+def _messages(image_bytes: bytes, mime: str) -> list[dict]:
     data_url = f"data:{mime};base64,{base64.b64encode(image_bytes).decode('ascii')}"
-    return {
-        "model": settings.openrouter_model_a,
-        "max_tokens": settings.openrouter_max_tokens,
-        "reasoning": {"enabled": False},
-        "provider": {"ignore": list(settings.openrouter_ignore_providers)},
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "ebay_raw_ocr",
-                "strict": True,
-                "schema": RAW_OCR_SCHEMA,
-            },
-        },
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT_STAGE_A},
-            {"role": "user", "content": [
-                {"type": "text", "text": "Распознай этот скриншот."},
-                {"type": "image_url", "image_url": {"url": data_url}},
-            ]},
-        ],
-    }
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT_STAGE_A},
+        {"role": "user", "content": [
+            {"type": "text", "text": "Распознай этот скриншот."},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ]},
+    ]
 
 
-async def transcribe(image_bytes: bytes, mime: str, http: httpx.AsyncClient) -> OcrResult:
-    t0 = time.monotonic()
+def _ocr_suspect(raw: dict) -> str | None:
+    """Структурно-подозрительный разбор → причина для ретрая, иначе None.
+
+    Проверяем поля, где известный режим сбоя vision (дроп/подмена цифры)
+    ломает жёсткий формат и почти наверняка означает ошибку распознавания:
+      - order_number: есть, но не лёг в NN-NNNNN-NNNNN;
+      - tracking_numbers: похоже на испорченный UPS/USPS (см. bad_tracking_reason).
+    Пустые значения не подозрительны (обрезанный скрин — легитимный случай).
+    Все случаи — hard: исчерпали ретраи → снимок в failed, кривой ключ не пишем.
+    """
+    if raw.get("is_order_details") is not True:
+        return None
+    obs = raw.get("observed") or {}
+    onum = obs.get("order_number")
+    if onum and not is_valid_order_number(onum):
+        return f"order_number format invalid: {onum!r}"
+    for t in (obs.get("tracking_numbers") or []):
+        reason = bad_tracking_reason(t)
+        if reason:
+            return reason
+    return None
+
+
+async def _request_ocr(image_bytes: bytes, mime: str, client: AsyncOpenAI) -> tuple[str, dict]:
+    """Один vision-вызов стадии A → (model, parsed_raw_json). Бросает OcrError."""
     try:
-        r = await http.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            json=_payload(image_bytes, mime),
-            headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
-            timeout=settings.openrouter_timeout_s,
+        r = await client.chat.completions.create(
+            model=settings.ocr_model,
+            max_tokens=settings.llm_max_tokens,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "ebay_raw_ocr",
+                    "strict": True,
+                    "schema": RAW_OCR_SCHEMA,
+                },
+            },
+            messages=_messages(image_bytes, mime),
         )
-    except (httpx.TimeoutException, httpx.RequestError) as e:
-        raise OcrError(f"network: {type(e).__name__}: {e}") from e
+    except APIError as e:
+        raise OcrError(f"llm: {type(e).__name__}: {str(e)[:300]}") from e
 
-    if r.status_code != 200:
-        raise OcrError(f"HTTP {r.status_code}: {r.text[:300]}")
-
-    data = r.json()
-    msg = data["choices"][0]["message"]
-    content = msg.get("content")
+    content = r.choices[0].message.content
     if not content:
-        reasoning_len = len(msg.get("reasoning") or "")
-        raise OcrError(f"empty content (reasoning_len={reasoning_len})")
+        raise OcrError("empty content")
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as e:
         raise OcrError(f"invalid JSON: {e}") from e
+    return r.model, parsed
 
-    return OcrResult(
-        raw_json=parsed,
-        model=data.get("model", settings.openrouter_model_a),
-        cost_usd=(data.get("usage") or {}).get("cost"),
-        latency_s=time.monotonic() - t0,
-    )
+
+async def transcribe(image_bytes: bytes, mime: str, client: AsyncOpenAI) -> OcrResult:
+    """Стадия A с retry-on-validation: если order_number не лёг в формат —
+    перечитываем снимок (ошибка vision вероятностная). Все попытки мимо —
+    OcrError, снимок уходит в failed на ручной разбор, а не пишет кривой ключ."""
+    t0 = time.monotonic()
+    last_suspect: str | None = None
+    for attempt in range(1, settings.ocr_max_attempts + 1):
+        model, parsed = await _request_ocr(image_bytes, mime, client)
+        last_suspect = _ocr_suspect(parsed)
+        if last_suspect is None:
+            return OcrResult(
+                raw_json=parsed,
+                model=model,
+                latency_s=time.monotonic() - t0,
+            )
+        log.warning(
+            "ocr suspect, retry %d/%d: %s",
+            attempt, settings.ocr_max_attempts, last_suspect,
+        )
+    raise OcrError(f"{last_suspect} (after {settings.ocr_max_attempts} attempts)")

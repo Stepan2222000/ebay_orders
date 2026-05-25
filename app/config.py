@@ -6,6 +6,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# OpenAI-совместимый прокси gpt55. Effort кодируется суффиксом имени модели
+# (cursor-gpt55(low|medium|high)) — отдельного поля reasoning прокси не требует.
+_DEFAULT_BASE_URL = "http://194.164.245.107:8317/v1"
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -15,13 +19,13 @@ class Settings:
     pg_password: str
     pg_database: str
 
-    openrouter_api_key: str
-    openrouter_model_a: str = "moonshotai/kimi-k2.6"  # OCR — стадия A
-    openrouter_model_b: str = "openai/gpt-5.5"        # агент — стадия B
-    openrouter_reasoning_effort_b: str = "medium"
-    openrouter_max_tokens: int = 16000
-    openrouter_timeout_s: float = 120.0
-    openrouter_ignore_providers: tuple[str, ...] = ("inceptron",)
+    openai_api_key: str
+    openai_base_url: str = _DEFAULT_BASE_URL
+    ocr_model: str = "cursor-gpt55(low)"    # транскрибация — стадия A
+    agent_model: str = "cursor-gpt55(high)"  # агент — стадия B
+    llm_max_tokens: int = 16000
+    llm_timeout_s: float = 120.0
+    ocr_max_attempts: int = 3
 
     worker_concurrency: int = 10
     worker_idle_sleep_s: float = 0.5
@@ -35,7 +39,8 @@ def load() -> Settings:
         pg_user=os.environ["PGUSER"],
         pg_password=os.environ["POSTGRES_PASSWORD"],
         pg_database=os.environ["PGDATABASE"],
-        openrouter_api_key=os.environ["OPENROUTER_API_KEY"],
+        openai_api_key=os.environ["OPENAI_API_KEY"],
+        openai_base_url=os.environ.get("OPENAI_BASE_URL") or _DEFAULT_BASE_URL,
         worker_concurrency=int(os.environ.get("WORKER_CONCURRENCY", 10)),
     )
 

@@ -4,9 +4,9 @@
 yield-ит готовые UIMessageChunk-словари по протоколу v1
 (start, start-step, text-*, tool-*, finish-step, finish).
 
-Tool-loop поверх app.openrouter.stream_chat_step. Параллельные
-tool-вызовы под Semaphore(40). reasoning_details пробрасываются между
-LLM-шагами в рамках одного HTTP-запроса (приватны, в чат не уходят).
+Tool-loop поверх app.llm.stream_chat_step. Параллельные
+tool-вызовы под Semaphore(40). chat completions stateless — reasoning
+между шагами не пробрасывается (прокси этого не требует).
 
 parts_acc заполняется по ходу — туда складывается ровно то, что
 бэкенд позже сохранит в chat_messages.parts (text-парты + tool-плашки
@@ -22,10 +22,10 @@ import uuid
 from typing import AsyncIterator
 
 import asyncpg
-import httpx
+from openai import AsyncOpenAI
 
 from .config import settings
-from .openrouter import build_chat_body, stream_chat_step
+from .llm import build_chat_body, stream_chat_step
 from .tools import OPENAI_TOOLS, execute_save_order, execute_sql, to_tool_content
 
 log = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ async def _run_tool(name: str, args: dict, pool: asyncpg.Pool) -> dict:
 
 async def stream_stage_b(
     pool: asyncpg.Pool,
-    http: httpx.AsyncClient,
+    client: AsyncOpenAI,
     messages_for_model: list[dict],
     message_id: str,
     parts_acc: list[dict],
@@ -56,18 +56,17 @@ async def stream_stage_b(
         yield {"type": "start-step"}
 
         body = build_chat_body(
-            model=settings.openrouter_model_b,
+            model=settings.agent_model,
             messages=messages_for_model,
             tools=OPENAI_TOOLS,
-            reasoning_effort=settings.openrouter_reasoning_effort_b,
-            max_tokens=settings.openrouter_max_tokens,
+            max_tokens=settings.llm_max_tokens,
         )
 
         text_id: str | None = None
         live_text: dict | None = None
         finished: dict | None = None
 
-        async for ev in stream_chat_step(http, body):
+        async for ev in stream_chat_step(client, body):
             t = ev["type"]
             if t == "text_delta":
                 if text_id is None:
@@ -97,7 +96,7 @@ async def stream_stage_b(
             yield {"type": "finish"}
             return
 
-        # assistant с tool_calls + reasoning_details для следующего шага
+        # assistant с tool_calls для следующего шага
         assistant_msg: dict = {
             "role": "assistant",
             "content": text_buf or "",
@@ -113,9 +112,6 @@ async def stream_stage_b(
                 for tc in tool_calls
             ],
         }
-        rd = (finished or {}).get("reasoning_details")
-        if rd:
-            assistant_msg["reasoning_details"] = rd
         messages_for_model.append(assistant_msg)
 
         # tool-input-* в порядке модели; держим прямые ссылки на плашки

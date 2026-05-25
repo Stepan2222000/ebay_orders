@@ -94,7 +94,7 @@
 - `app/agent.py` — async-генератор стадии B. На входе: pool, http,
   готовый список сообщений для модели, число pending. Внутри —
   tool-loop поверх существующего `stream_chat_step` из
-  `app/openrouter.py`. На выходе — последовательность UIMessageStream
+  `app/llm.py` (бывший `app/openrouter.py`). На выходе — последовательность UIMessageStream
   чанков (готовых dict'ов).
 
 **Меняем:**
@@ -122,8 +122,8 @@
 **Не трогаем:**
 
 - стадия A целиком (`app/worker.py`, `app/ocr.py`);
-- `app/openrouter.py` — функция `stream_chat_step` универсальна, она
-  уже даёт нужные нам события text/tool/reasoning;
+- `app/llm.py` (бывший `app/openrouter.py`) — функция `stream_chat_step`
+  универсальна, она уже даёт нужные нам события text/tool;
 - `app/listener.py` (PgFanout) — нужен для сайдбар-стрима, в
   чат-эндпоинт не вмешивается;
 - `frontend/lib/sse.tsx` — общий useSSE, без изменений.

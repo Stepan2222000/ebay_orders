@@ -10,7 +10,7 @@ import asyncio
 import logging
 
 import asyncpg
-import httpx
+from openai import AsyncOpenAI
 
 from .config import settings
 from .db import pool
@@ -52,10 +52,10 @@ UPDATE screenshots
 """
 
 
-async def _process(http: httpx.AsyncClient, sha: bytes, image_bytes: bytes, mime: str) -> None:
+async def _process(client: AsyncOpenAI, sha: bytes, image_bytes: bytes, mime: str) -> None:
     short = sha.hex()[:12]
     try:
-        res = await transcribe(image_bytes, mime, http)
+        res = await transcribe(image_bytes, mime, client)
     except OcrError as e:
         async with (await pool()).acquire() as conn:
             await conn.execute(_MARK_FAILED_SQL, sha, str(e)[:1000])
@@ -68,9 +68,8 @@ async def _process(http: httpx.AsyncClient, sha: bytes, image_bytes: bytes, mime
             await conn.execute(_MARK_DONE_SQL, sha)
     obs = (res.raw_json.get("observed") or {})
     log.info(
-        "ocr ok   %s  lat=%.1fs  cost=%s  is_order=%s  order_number=%s",
-        short, res.latency_s,
-        f"${res.cost_usd:.4f}" if res.cost_usd is not None else "?",
+        "ocr ok   %s  lat=%.1fs  model=%s  is_order=%s  order_number=%s",
+        short, res.latency_s, res.model,
         res.raw_json.get("is_order_details"),
         obs.get("order_number"),
     )
@@ -86,7 +85,11 @@ async def run() -> None:
 
     running: set[asyncio.Task] = set()
 
-    async with httpx.AsyncClient() as http:
+    async with AsyncOpenAI(
+        base_url=settings.openai_base_url,
+        api_key=settings.openai_api_key,
+        timeout=settings.llm_timeout_s,
+    ) as client:
         while True:
             free = n - len(running)
             if free > 0:
@@ -95,7 +98,7 @@ async def run() -> None:
                         rows = await conn.fetch(_CLAIM_SQL, free)
                     for r in rows:
                         t = asyncio.create_task(
-                            _process(http, r["sha256"], r["bytes"], r["mime_type"])
+                            _process(client, r["sha256"], r["bytes"], r["mime_type"])
                         )
                         running.add(t)
                         t.add_done_callback(running.discard)

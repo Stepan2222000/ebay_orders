@@ -14,6 +14,7 @@ from typing import Any
 import asyncpg
 
 from .matching import run_matching
+from .validation import bad_tracking_reason, is_valid_order_number, normalize_tracking
 
 
 # ─── JSON-Schema спецификации для OpenRouter / OpenAI tool-calling ────────────
@@ -254,7 +255,7 @@ def _norm_text(v: Any) -> str:
 
 
 def _norm_tracking(v: Any) -> str:
-    return re.sub(r"[^A-Za-z0-9]", "", _clean_str(v)).upper()
+    return normalize_tracking(_clean_str(v))
 
 
 def _short_shas(shas: list[str]) -> str:
@@ -357,6 +358,11 @@ def parse_save_order_args(args: dict) -> dict:
     sold_by = _clean_str(args.get("sold_by"))
     if not order_number:
         return fail("missing_order_number", "order_number is empty")
+    if not is_valid_order_number(order_number):
+        return fail(
+            "bad_order_number_format",
+            f"order_number {order_number!r} не похож на eBay-формат NN-NNNNN-NNNNN",
+        )
     if not sold_by:
         return fail("missing_sold_by", "sold_by is empty")
 
@@ -459,6 +465,10 @@ def parse_save_order_args(args: dict) -> dict:
         _clean_str(t) for t in (args.get("tracking_numbers") or [])
         if _clean_str(t)
     ]
+    for tn in tracking_numbers:
+        reason = bad_tracking_reason(tn)
+        if reason:
+            return fail("bad_tracking_format", reason)
 
     return {
         "screenshot_shas": screenshot_shas,

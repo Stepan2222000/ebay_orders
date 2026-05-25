@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 
 import anyio
 import asyncpg
-import httpx
+from openai import AsyncOpenAI
 from fastapi import APIRouter, FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -44,7 +44,11 @@ async def lifespan(app: FastAPI):
     p = await pool()
     async with p.acquire() as conn:
         app.state.db_schema = await dump_schema_text(conn)
-    app.state.http = httpx.AsyncClient(timeout=settings.openrouter_timeout_s)
+    app.state.llm = AsyncOpenAI(
+        base_url=settings.openai_base_url,
+        api_key=settings.openai_api_key,
+        timeout=settings.llm_timeout_s,
+    )
     app.state.fanout = PgFanout(
         host=settings.pg_host,
         port=settings.pg_port,
@@ -58,7 +62,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await app.state.fanout.close()
-        await app.state.http.aclose()
+        await app.state.llm.close()
         await close()
 
 
@@ -554,7 +558,7 @@ async def chat_post(request: Request):
         nonlocal cancelled
         try:
             async for ev in stream_stage_b(
-                p, request.app.state.http, messages_for_model, message_id, parts_acc,
+                p, request.app.state.llm, messages_for_model, message_id, parts_acc,
             ):
                 yield sse(ev)
             yield sse("[DONE]")
