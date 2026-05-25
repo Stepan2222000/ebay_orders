@@ -13,6 +13,8 @@ from typing import Any
 
 import asyncpg
 
+from .matching import run_matching
+
 
 # ─── JSON-Schema спецификации для OpenRouter / OpenAI tool-calling ────────────
 
@@ -550,11 +552,18 @@ ON CONFLICT (order_number) DO UPDATE SET
 RETURNING order_id;
 """
 
+# Листинг (item_number) — отдельная сущность с каноническим титулом. Титул берём
+# первый и не перезаписываем (у дублей он идентичен).
+_UPSERT_LISTING_SQL = """
+INSERT INTO items(item_number, item_title)
+VALUES ($1, $2)
+ON CONFLICT (item_number) DO NOTHING;
+"""
+
 _UPSERT_ITEM_SQL = """
-INSERT INTO order_items(order_id, item_number, item_title, item_quantity, item_line_total_usd)
-VALUES ($1, $2, $3, $4, $5::numeric)
+INSERT INTO order_items(order_id, item_number, item_quantity, item_line_total_usd)
+VALUES ($1, $2, $3, $4::numeric)
 ON CONFLICT (order_id, item_number) DO UPDATE SET
-    item_title          = EXCLUDED.item_title,
     item_quantity       = EXCLUDED.item_quantity,
     item_line_total_usd = EXCLUDED.item_line_total_usd;
 """
@@ -793,11 +802,11 @@ async def execute_save_order(pool: asyncpg.Pool, args: dict) -> dict:
                 )
 
                 for it in parsed["items"]:
+                    await conn.execute(_UPSERT_LISTING_SQL, it["item_number"], it["item_title"])
                     await conn.execute(
                         _UPSERT_ITEM_SQL,
                         order_id,
                         it["item_number"],
-                        it["item_title"],
                         it["item_quantity"],
                         it["item_line_total_usd"],
                     )
@@ -815,8 +824,7 @@ async def execute_save_order(pool: asyncpg.Pool, args: dict) -> dict:
                     await conn.execute(_UPSERT_TRACKING_SQL, order_id, tn)
 
                 linked = await conn.fetchval(_LINK_SCREENSHOTS_SQL, order_id, parsed["sha_bytes"])
-
-                return {
+                result = {
                     "ok": True,
                     "order_id": order_id,
                     "order_number": parsed["order_number"],
@@ -830,3 +838,14 @@ async def execute_save_order(pool: asyncpg.Pool, args: dict) -> dict:
                 message,
                 screenshot_shas=parsed["screenshot_shas"],
             )
+
+    # Заказ сохранён и закоммичен. Матчинг item -> деталь каталога — ОТДЕЛЬНЫМ
+    # best-effort шагом: недоступность каталога/FDW не должна ронять сохранение.
+    # Матчатся только pending-листинги; уже разобранные переиспользуются.
+    item_numbers = [it["item_number"] for it in parsed["items"]]
+    try:
+        result["matches"] = await run_matching(pool, item_numbers)
+    except Exception as e:
+        result["matches"] = []
+        result["match_deferred"] = f"{type(e).__name__}: {e}"
+    return result

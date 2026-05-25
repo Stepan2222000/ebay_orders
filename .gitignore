@@ -21,6 +21,7 @@ backups/
 dogfood-output/
 logs/
 tmp/
+db/ebay_orders.db
 
 # Frontend build artifacts
 frontend/.next/

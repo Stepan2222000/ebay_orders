@@ -111,6 +111,11 @@ _AGENT_COUNTS_SQL = (
     " count(*) FILTER (WHERE ocr_status='done' AND agent_status='failed')::int AS failed "
     "FROM screenshots"
 )
+# Бэклог привязки items к каталогу — всё, кроме успешно привязанных (linked).
+_MATCH_BACKLOG_SQL = (
+    "SELECT match_status::text AS s, count(*)::int AS n "
+    "FROM items WHERE match_status <> 'linked' GROUP BY match_status"
+)
 
 
 async def _status_dict(conn: asyncpg.Connection) -> dict[str, object]:
@@ -118,6 +123,8 @@ async def _status_dict(conn: asyncpg.Connection) -> dict[str, object]:
         "pending": 0, "running": 0, "done": 0, "failed": 0,
         "assembling": 0,
         "agent_total": 0, "agent_done": 0, "agent_failed": 0,
+        "match_pending": 0, "match_needs_review": 0,
+        "match_not_in_catalog": 0, "match_no_article": 0,
     }
     for r in await conn.fetch(_STATUS_SQL):
         out[r["s"]] = r["n"]
@@ -126,6 +133,8 @@ async def _status_dict(conn: asyncpg.Connection) -> dict[str, object]:
     out["agent_total"] = counts["total"]
     out["agent_done"] = counts["done"]
     out["agent_failed"] = counts["failed"]
+    for r in await conn.fetch(_MATCH_BACKLOG_SQL):
+        out[f"match_{r['s']}"] = r["n"]
     return out
 
 
@@ -519,11 +528,18 @@ async def chat_post(request: Request):
         await conn.execute(_INSERT_CHAT_MSG_SQL, "user", user_parts)
         history = await _chat_history(conn)
         pending_count = await conn.fetchval(_PENDING_COUNT_SQL) or 0
+        backlog = {r["s"]: r["n"] for r in await conn.fetch(_MATCH_BACKLOG_SQL)}
 
+    match_backlog = (
+        f"needs_review {backlog.get('needs_review', 0)}, "
+        f"not_in_catalog {backlog.get('not_in_catalog', 0)}, "
+        f"не сматчено {backlog.get('pending', 0)}"
+    )
     messages_for_model: list[dict] = [{
         "role": "system",
         "content": SYSTEM_PROMPT_STAGE_B.format(
             pending_count=pending_count,
+            match_backlog=match_backlog,
             db_schema=request.app.state.db_schema,
         ),
     }]
