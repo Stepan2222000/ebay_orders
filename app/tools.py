@@ -573,8 +573,8 @@ WHERE NOT EXISTS (
 """
 
 _UPSERT_TRACKING_SQL = """
-INSERT INTO order_tracking_numbers(order_id, tracking_number)
-VALUES ($1, $2)
+INSERT INTO order_tracking_numbers(order_id, tracking_number, source)
+VALUES ($1, $2, 'ebay')
 ON CONFLICT DO NOTHING;
 """
 

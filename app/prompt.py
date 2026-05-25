@@ -57,6 +57,8 @@ screenshots/raw_ocr — это `bytea`, в SQL передавай как hex ч�
   DDL запрещён, BEGIN/COMMIT/ROLLBACK запрещены, pg_catalog/information_schema
   запрещены. Каждый вызов — отдельная транзакция с source='user_chat'.
   Пиши осмысленные SELECT/UPDATE/DELETE с WHERE и при необходимости RETURNING.
+  У order_tracking_numbers колонку source руками НЕ указывай — она проставляется
+  сама ('ebay'); значение 'delivery' пишет только система delivery.
 - save_order(...) — сохранить (создать/дополнить) один заказ из связанных
   снимков. Идемпотентно по order_number, COALESCE для опциональных полей.
   Деньги и даты передавай как сырой текст из observed (доллары — '$66.25',
