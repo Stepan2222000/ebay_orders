@@ -5,6 +5,7 @@ import { DefaultChatTransport } from "ai";
 import type { UIMessage } from "ai";
 import { API, resetChat as resetChatApi } from "@/lib/api";
 import AssemblingIndicator from "./AssemblingIndicator";
+import MatchBacklogPill from "./MatchBacklogPill";
 import ConfirmDialog from "./ConfirmDialog";
 import Composer from "./Composer";
 import Message from "./Message";
@@ -140,6 +141,7 @@ function ChatInner({
         <div className={styles.headerLeft}>
           <span className={styles.brand}>eBay orders.</span>
           <AssemblingIndicator streaming={busy} />
+          <MatchBacklogPill />
         </div>
         <div className={styles.headerActions}>
           <ThemeToggle />
