@@ -64,30 +64,42 @@ def _ocr_suspect(raw: dict) -> str | None:
     return None
 
 
+# Claude через OpenAI-совместимый прокси ИГНОРИРУЕТ response_format (офиц. доки
+# Anthropic «OpenAI SDK compatibility»: response_format — Ignored). Надёжный
+# способ получить JSON по схеме — описать схему как единственный инструмент и
+# принудительно вызвать его через tool_choice; JSON приходит в
+# tool_calls[0].function.arguments, прозы модель не выдаёт. Работает и для
+# моделей без structured outputs (gpt55/Claude через прокси).
+_OCR_TOOLS = [{
+    "type": "function",
+    "function": {
+        "name": "emit_ocr",
+        "description": "Вернуть распознанные поля скриншота строго по схеме.",
+        "parameters": RAW_OCR_SCHEMA,
+    },
+}]
+_OCR_TOOL_CHOICE = {"type": "function", "function": {"name": "emit_ocr"}}
+
+
 async def _request_ocr(image_bytes: bytes, mime: str, client: AsyncOpenAI) -> tuple[str, dict]:
     """Один vision-вызов стадии A → (model, parsed_raw_json). Бросает OcrError."""
     try:
         r = await client.chat.completions.create(
             model=settings.ocr_model,
             max_tokens=settings.llm_max_tokens,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "ebay_raw_ocr",
-                    "strict": True,
-                    "schema": RAW_OCR_SCHEMA,
-                },
-            },
+            tools=_OCR_TOOLS,
+            tool_choice=_OCR_TOOL_CHOICE,
             messages=_messages(image_bytes, mime),
         )
     except APIError as e:
         raise OcrError(f"llm: {type(e).__name__}: {str(e)[:300]}") from e
 
-    content = r.choices[0].message.content
-    if not content:
-        raise OcrError("empty content")
+    tool_calls = r.choices[0].message.tool_calls
+    if not tool_calls:
+        raise OcrError("no tool_call in response")
+    args = tool_calls[0].function.arguments
     try:
-        parsed = json.loads(content)
+        parsed = json.loads(args)
     except json.JSONDecodeError as e:
         raise OcrError(f"invalid JSON: {e}") from e
     return r.model, parsed
