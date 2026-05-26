@@ -1,33 +1,39 @@
 "use client";
 import { useEffect, useState } from "react";
 import { API } from "@/lib/api";
-import { useSSE } from "@/lib/sse";
+import { useSSEStatus } from "@/lib/sse";
 import styles from "./ConnectionBanner.module.css";
 
-// Подписан на тот же общий /api/status/stream через useSSE — НЕ открывает свой
-// EventSource (browser pool 6/origin под HTTP/1.1, см. lib/sse.tsx).
-// При полном отсутствии событий за 8с показываем баннер. Бэк гарантирует
-// первое сообщение сразу после connect и data-heartbeat каждые ~15с.
-const LOST_GRACE_MS = 8000;
+// Баннер отражает РЕАЛЬНОЕ состояние SSE-коннекта (EventSource), а не частоту
+// сообщений: при разрыве EventSource шлёт onerror и сам уходит в авто-reconnect
+// — это и есть «связь потеряна». На простаивающем здоровом бэке коннект остаётся
+// open (heartbeat'ы держат его живым), поэтому баннер не появляется.
+// SHOW_AFTER_MS — дебаунс: гасит мигание на коротких переподключениях.
+const SHOW_AFTER_MS = 4000;
 
 export default function ConnectionBanner() {
-  const [lost, setLost] = useState(false);
-  const [tick, setTick] = useState(0);
-
-  useSSE(`${API}/status/stream`, () => {
-    setLost(false);
-    setTick((t) => t + 1);
-  });
+  const status = useSSEStatus(`${API}/status/stream`);
+  const [show, setShow] = useState(false);
 
   useEffect(() => {
-    const t = setTimeout(() => setLost(true), LOST_GRACE_MS);
+    if (status === "open") {
+      setShow(false);
+      return;
+    }
+    // connecting / lost: показываем с задержкой, чтобы не мигало на блипах
+    const t = setTimeout(() => setShow(true), SHOW_AFTER_MS);
     return () => clearTimeout(t);
-  }, [tick]);
+  }, [status]);
 
-  if (!lost) return null;
+  if (!show) return null;
 
   return (
-    <div className={styles.banner} data-testid="connection-banner">
+    <div
+      className={styles.banner}
+      role="status"
+      aria-live="polite"
+      data-testid="connection-banner"
+    >
       Связь с сервером потеряна. Жду восстановления…
     </div>
   );

@@ -17,26 +17,41 @@ import {
   useContext,
   useEffect,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
 
 type Handler = (data: unknown, raw: MessageEvent) => void;
+
+/** Состояние реального SSE-коннекта (EventSource), а не частоты сообщений. */
+export type SSEStatus = "connecting" | "open" | "lost";
+type StatusSub = (status: SSEStatus) => void;
 
 interface Entry {
   count: number;
   source: EventSource;
   handlers: Set<Handler>;
   watchdog: ReturnType<typeof setTimeout> | null;
+  status: SSEStatus;
+  statusSubs: Set<StatusSub>;
 }
 
 const SSEContext = createContext<Map<string, Entry> | null>(null);
 
 const WATCHDOG_MS = 60_000;
 
+function setStatus(entry: Entry, status: SSEStatus) {
+  if (entry.status === status) return;
+  entry.status = status;
+  for (const sub of entry.statusSubs) sub(status);
+}
+
 function rearm(entry: Entry, key: string, map: Map<string, Entry>) {
   if (entry.watchdog) clearTimeout(entry.watchdog);
   entry.watchdog = setTimeout(() => {
-    // зомби-коннект: тишина дольше watchdog'а. Закрываем и пересоздаём.
+    // зомби-коннект: тишина дольше watchdog'а (Safari/iOS background suspend
+    // без onerror). Помечаем потерю, закрываем и пересоздаём.
+    setStatus(entry, "lost");
     try {
       entry.source.close();
     } catch {
@@ -50,8 +65,12 @@ function rearm(entry: Entry, key: string, map: Map<string, Entry>) {
 }
 
 function bind(source: EventSource, entry: Entry, key: string, map: Map<string, Entry>) {
-  source.onopen = () => rearm(entry, key, map);
+  source.onopen = () => {
+    setStatus(entry, "open");
+    rearm(entry, key, map);
+  };
   source.onmessage = (e) => {
+    setStatus(entry, "open");
     rearm(entry, key, map);
     let data: unknown = e.data;
     try {
@@ -70,9 +89,51 @@ function bind(source: EventSource, entry: Entry, key: string, map: Map<string, E
     for (const h of entry.handlers) h(data, e);
   };
   source.onerror = () => {
-    // встроенный авто-reconnect EventSource — ничего не делаем.
-    // если браузер не сможет восстановить за WATCHDOG_MS — наш rearm пересоздаст.
+    // EventSource сам уходит в авто-reconnect (readyState→CONNECTING). Для нас
+    // любой разрыв — «связь потеряна»; вернётся onopen/onmessage → снова open.
+    // Если браузер не восстановит за WATCHDOG_MS — rearm пересоздаст коннект.
+    setStatus(entry, "lost");
   };
+}
+
+/** Создать или переиспользовать ref-counted entry на (url). */
+function acquire(map: Map<string, Entry>, key: string): Entry {
+  let entry = map.get(key);
+  if (!entry) {
+    const source = new EventSource(key);
+    entry = {
+      count: 0,
+      source,
+      handlers: new Set(),
+      watchdog: null,
+      status: "connecting",
+      statusSubs: new Set(),
+    };
+    map.set(key, entry);
+    bind(source, entry, key, map);
+    rearm(entry, key, map);
+  }
+  entry.count += 1;
+  return entry;
+}
+
+function release(map: Map<string, Entry>, key: string, entry: Entry) {
+  entry.count -= 1;
+  if (entry.count <= 0) {
+    // defer close: при cleanup→remount в StrictMode счётчик успеет вернуться >0,
+    // и мы НЕ закроем живой EventSource. В проде этот setTimeout(0) безвреден.
+    setTimeout(() => {
+      if (entry.count <= 0 && map.get(key) === entry) {
+        if (entry.watchdog) clearTimeout(entry.watchdog);
+        try {
+          entry.source.close();
+        } catch {
+          /* noop */
+        }
+        map.delete(key);
+      }
+    }, 0);
+  }
 }
 
 export function SSEProvider({ children }: { children: ReactNode }) {
@@ -98,44 +159,43 @@ export function useSSE(
   useEffect(() => {
     if (!map || !enabled) return;
     const key = url;
-
-    let entry = map.get(key);
-    if (!entry) {
-      const source = new EventSource(key);
-      entry = {
-        count: 0,
-        source,
-        handlers: new Set(),
-        watchdog: null,
-      };
-      map.set(key, entry);
-      bind(source, entry, key, map);
-      rearm(entry, key, map);
-    }
-    entry.count += 1;
+    const entry = acquire(map, key);
 
     const wrap: Handler = (data, raw) => handlerRef.current(data, raw);
     entry.handlers.add(wrap);
 
     return () => {
-      const en = entry!;
-      en.handlers.delete(wrap);
-      en.count -= 1;
-      if (en.count <= 0) {
-        // defer close: при cleanup→remount в StrictMode счётчик успеет вернуться >0,
-        // и мы НЕ закроем живой EventSource. В проде этот setTimeout(0) безвреден.
-        setTimeout(() => {
-          if (en.count <= 0 && map.get(key) === en) {
-            if (en.watchdog) clearTimeout(en.watchdog);
-            try {
-              en.source.close();
-            } catch {
-              /* noop */
-            }
-            map.delete(key);
-          }
-        }, 0);
-      }
+      entry.handlers.delete(wrap);
+      release(map, key, entry);
     };
   }, [url, enabled, map]);
+}
+
+/**
+ * Подписаться на состояние SSE-коннекта (а не на сообщения). Держит коннект
+ * по ref-count так же, как useSSE, поэтому работает и в одиночку.
+ */
+export function useSSEStatus(
+  url: string,
+  { enabled = true }: UseSSEOptions = {},
+): SSEStatus {
+  const map = useContext(SSEContext);
+  const [status, setLocal] = useState<SSEStatus>("connecting");
+
+  useEffect(() => {
+    if (!map || !enabled) return;
+    const key = url;
+    const entry = acquire(map, key);
+
+    setLocal(entry.status);
+    const sub: StatusSub = (s) => setLocal(s);
+    entry.statusSubs.add(sub);
+
+    return () => {
+      entry.statusSubs.delete(sub);
+      release(map, key, entry);
+    };
+  }, [url, enabled, map]);
+
+  return status;
 }
