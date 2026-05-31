@@ -81,7 +81,15 @@ async def stream_stage_b(
             elif t == "error":
                 if text_id is not None:
                     yield {"type": "text-end", "id": text_id}
-                yield {"type": "error", "errorText": ev["error"]}
+                # Ошибку LLM показываем как видимое сообщение ассистента и
+                # кладём в parts_acc — иначе она теряется и при reload, и в UI
+                # (useChat.error в ChatPane не рендерится). Никаких тихих фолбеков.
+                err_text = f"⚠️ Ошибка LLM: {ev['error']}"
+                err_id = f"txt_{uuid.uuid4().hex[:8]}"
+                yield {"type": "text-start", "id": err_id}
+                yield {"type": "text-delta", "id": err_id, "delta": err_text}
+                yield {"type": "text-end", "id": err_id}
+                parts_acc.append({"type": "text", "text": err_text})
                 yield {"type": "finish-step"}
                 yield {"type": "finish"}
                 return
