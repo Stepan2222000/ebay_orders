@@ -21,7 +21,7 @@ class Settings:
 
     openai_api_key: str
     openai_base_url: str = _DEFAULT_BASE_URL
-    ocr_model: str = "claude-opus-4-7"   # транскрибация — стадия A (Claude vision)
+    ocr_model: str = "claude-opus-4-8"   # транскрибация — стадия A (Claude vision)
     agent_model: str = "gpt-5.5"  # агент — стадия B
     llm_max_tokens: int = 16000
     llm_timeout_s: float = 120.0
