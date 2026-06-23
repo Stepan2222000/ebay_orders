@@ -8,6 +8,12 @@ import ScreenshotCard from "./ScreenshotCard";
 import ScreenshotDetailModal from "./ScreenshotDetailModal";
 import styles from "./Sidebar.module.css";
 
+// StatsRow зовёт onChange на КАЖДОЕ SSE-сообщение статуса (а их при обработке
+// много). Перетягивать весь список скриншотов на каждый тик нельзя — тяжёлые
+// GET'ы забивают лимит сокетов браузера и душат загрузку (POST не пролезает).
+// Троттлим: список обновляется не чаще и не реже раза в этот интервал.
+const SSE_RELOAD_MS = 1500;
+
 export default function Sidebar() {
   const [items, setItems] = useState<Screenshot[]>([]);
   const [openSha, setOpenSha] = useState<string | null>(null);
@@ -26,6 +32,31 @@ export default function Sidebar() {
     }
   }, []);
 
+  // Троттл reload для частых SSE-тиков: leading + trailing, не чаще раза в
+  // SSE_RELOAD_MS, но и не реже (чтобы финальное состояние всё равно доехало).
+  const reloadAt = useRef(0);
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const throttledReload = useCallback(() => {
+    const since = Date.now() - reloadAt.current;
+    if (since >= SSE_RELOAD_MS) {
+      reloadAt.current = Date.now();
+      reload();
+    } else if (reloadTimer.current === null) {
+      reloadTimer.current = setTimeout(() => {
+        reloadTimer.current = null;
+        reloadAt.current = Date.now();
+        reload();
+      }, SSE_RELOAD_MS - since);
+    }
+  }, [reload]);
+
+  useEffect(
+    () => () => {
+      if (reloadTimer.current) clearTimeout(reloadTimer.current);
+    },
+    [],
+  );
+
   useEffect(() => {
     const t = setTimeout(() => setActiveQuery(query.trim()), 200);
     return () => clearTimeout(t);
@@ -43,7 +74,7 @@ export default function Sidebar() {
         <h1 className={styles.title}>Скриншоты.</h1>
       </header>
 
-      <StatsRow onChange={reload} />
+      <StatsRow onChange={throttledReload} />
 
       <input
         type="search"

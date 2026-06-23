@@ -35,6 +35,12 @@ UPDATE screenshots s
 RETURNING s.sha256, s.bytes, s.mime_type;
 """
 
+# Лёгкая проверка наличия работы перед UPDATE-claim. SELECT не дёргает
+# statement-level триггер screenshots_status_notify_upd, поэтому в простое воркер
+# не плодит пустые NOTIFY status_changed (иначе SSE и фронт штормят запросами и
+# душат загрузку). Покрыт частичным индексом screenshots_ocr_pending_idx.
+_HAS_PENDING_SQL = "SELECT EXISTS(SELECT 1 FROM screenshots WHERE ocr_status = 'pending')"
+
 _INSERT_OCR_SQL = """
 INSERT INTO raw_ocr(sha256, model, raw_json) VALUES ($1, $2, $3);
 """
@@ -95,7 +101,11 @@ async def run() -> None:
             if free > 0:
                 try:
                     async with (await pool()).acquire() as conn:
-                        rows = await conn.fetch(_CLAIM_SQL, free)
+                        rows = (
+                            await conn.fetch(_CLAIM_SQL, free)
+                            if await conn.fetchval(_HAS_PENDING_SQL)
+                            else []
+                        )
                     for r in rows:
                         t = asyncio.create_task(
                             _process(client, r["sha256"], r["bytes"], r["mime_type"])
