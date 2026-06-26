@@ -12,7 +12,7 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   IMAGE_OWNER: stepan2222000
-  PUBLIC_API_BASE: http://194.164.245.107:3051
+  PUBLIC_API_BASE: https://ebay-orders.parts-everything.site/api
 
 jobs:
   build:
