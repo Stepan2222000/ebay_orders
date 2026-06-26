@@ -29,7 +29,7 @@ services:
     container_name: ebay_orders_web
     restart: unless-stopped
     environment:
-      NEXT_PUBLIC_API_BASE: "https://ebay-orders.parts-everything.site/api"
+      NEXT_PUBLIC_API_BASE: "https://ebay-orders.parts-everything.site"
     ports:
       - "3050:3000"
     networks:
