@@ -235,3 +235,37 @@ async def delete_manual_photo(item_number: str, photo_id: int) -> bool:
         Bucket=settings.manual_photo_bucket, Key=key,
     )
     return True
+
+
+# ─── Разовый бэкофилл (после деплоя): python -m app backfill-photos ─────────
+
+_DISTINCT_NUMS_SQL = """
+SELECT DISTINCT it->>'item_number' AS item_number
+  FROM raw_ocr,
+       jsonb_array_elements(coalesce(raw_json->'observed'->'items', '[]'::jsonb)) it
+ WHERE it->>'item_number' IS NOT NULL
+"""
+
+
+async def backfill_all() -> None:
+    """Прогнать все распознанные ранее item_number (инлайн-триггер их не покрывает —
+    OCR давно done). Идемпотентно: уже done/failed пропускаются."""
+    import logging as _logging
+
+    from .db import close
+
+    _logging.basicConfig(level=_logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    p = await pool()
+    async with p.acquire() as conn:
+        rows = await conn.fetch(_DISTINCT_NUMS_SQL)
+    nums = [r["item_number"] for r in rows if r["item_number"]]
+    log.info("backfill: %d distinct item_numbers", len(nums))
+    await ensure_ebay_photos(nums)
+    async with p.acquire() as conn:
+        stats = await conn.fetch(
+            "SELECT ebay_status, count(*)::int AS n FROM listing_photos GROUP BY 1"
+        )
+        total = await conn.fetchval("SELECT count(*) FROM item_photos WHERE source = 'ebay'")
+    log.info("backfill done: %s | ebay photos stored=%s",
+             {r["ebay_status"]: r["n"] for r in stats}, total)
+    await close()
