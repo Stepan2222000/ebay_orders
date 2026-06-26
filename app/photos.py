@@ -60,16 +60,6 @@ async def _download(url: str) -> bytes:
     return r.content
 
 
-def _is_terminal(err: Exception) -> bool:
-    """Мёртвый листинг — не ретраим. 404 у item-транспорта прилетает как
-    TransportError('unexpected status 404 ...'); вёрстка уехала — ParseError."""
-    if isinstance(err, ParseError):
-        return True
-    if isinstance(err, TransportError) and "404" in str(err):
-        return True
-    return False
-
-
 async def ensure_ebay_photos(item_numbers: list[str]) -> None:
     """Best-effort: для каждого нового номера скачать галерею eBay в MinIO и
     записать в ``item_photos``. Уже ``done``/``failed`` — пропускаем. Не бросает."""
@@ -116,9 +106,11 @@ async def _fetch_and_store(item_number: str) -> None:
         )
 
     try:
-        urls = await ebay_library.fetch_image_urls(item_number)
-    except Exception as e:                # noqa: BLE001
-        terminal = _is_terminal(e) or attempts >= settings.photo_max_attempts
+        res = await ebay_library.fetch_image_urls(item_number)
+    except (ParseError, TransportError) as e:
+        # ParseError — модель/вёрстка уехали (терминально). TransportError —
+        # транзиент ebaydesc / nordt не пробил антибот: повтор, после лимита — failed.
+        terminal = isinstance(e, ParseError) or attempts >= settings.photo_max_attempts
         status = "failed" if terminal else "pending"
         async with p.acquire() as conn:
             await conn.execute(
@@ -132,7 +124,9 @@ async def _fetch_and_store(item_number: str) -> None:
                  item_number, status, type(e).__name__, attempts)
         return
 
-    # success: качаем и льём (urls пустой = живой листинг без картинок → done с нулём)
+    # success: res.urls — ПРАВИЛЬНЫЕ фото (ebaydesc для live/sold, nordt для delisted;
+    # пусто = removed/404 → done с нулём). 404 больше не исключение.
+    urls = res.urls
     s3 = _s3_ebay()
     uploaded: list[tuple[int, str, bytes, str]] = []
     for idx, url in enumerate(urls):
@@ -156,7 +150,8 @@ async def _fetch_and_store(item_number: str) -> None:
                     WHERE item_number = $1""",
                 item_number,
             )
-    log.info("ebay photos %s: done, %d photos", item_number, len(urls))
+    log.info("ebay photos %s: done (%s/%s), %d photos",
+             item_number, res.status, res.source, len(urls))
 
 
 # ─── Ручные фото (загрузка пользователем) ──────────────────────────────────

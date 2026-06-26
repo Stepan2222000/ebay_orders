@@ -13,7 +13,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     # фото товаров: ссылки галереи eBay + заливка в MinIO (item-лейн, без браузера).
     # Пин на коммит — контракт жёсткий, bump осознанный (как в parser_ebay).
-    "ebay-library @ git+https://github.com/Stepan2222000/ebay-library.git@399c42d",
+    "ebay-library @ git+https://github.com/Stepan2222000/ebay-library.git@a39a8e9",
     # конвертация ручных фото в JPEG (вход вкл. HEIC с телефона)
     "Pillow>=10",
     "pillow-heif>=0.16",
