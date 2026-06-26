@@ -92,9 +92,11 @@ export default function Composer({
             hidden
             data-testid="attach-input"
             onChange={(e) => {
-              const fl = e.currentTarget.files;
-              if (fl) setFiles((prev) => [...prev, ...Array.from(fl)]);
+              // захватываем файлы СИНХРОННО: в Safari value="" обнуляет FileList,
+              // а отложенный Array.from внутри setFiles увидел бы уже пусто
+              const picked = Array.from(e.currentTarget.files ?? []);
               e.currentTarget.value = "";
+              if (picked.length) setFiles((prev) => [...prev, ...picked]);
             }}
           />
         </div>
