@@ -11,6 +11,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# git — для pip-установки ebay-library из коммита (как в parser_ebay)
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml ./
 COPY app ./app
 RUN pip install --no-cache-dir .

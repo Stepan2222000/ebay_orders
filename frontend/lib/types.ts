@@ -46,3 +46,10 @@ export interface ScreenshotDetail extends Screenshot {
 export interface UploadResult {
   screenshots: { sha256: string; status: "queued" | "duplicate" }[];
 }
+
+/** Одно фото товара (галерея по item_number). url — проксированный путь /api/... */
+export interface ListingPhoto {
+  id: number;
+  source: "ebay" | "manual";
+  url: string;
+}

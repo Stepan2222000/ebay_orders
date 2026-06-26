@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 from .config import settings
 from .db import pool
 from .ocr import OcrError, transcribe
+from .photos import ensure_ebay_photos
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +80,12 @@ async def _process(client: AsyncOpenAI, sha: bytes, image_bytes: bytes, mime: st
         res.raw_json.get("is_order_details"),
         obs.get("order_number"),
     )
+
+    # Фото товаров — инлайн в пайплайне, по распознанным номерам объявлений.
+    # Best-effort: ensure_ebay_photos сам не бросает, OCR-результат уже закоммичен.
+    nums = [it.get("item_number") for it in (obs.get("items") or []) if it.get("item_number")]
+    if nums:
+        await ensure_ebay_photos(nums)
 
 
 async def run() -> None:

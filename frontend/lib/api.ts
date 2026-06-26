@@ -1,4 +1,10 @@
-import type { Screenshot, ScreenshotDetail, Stats, UploadResult } from "./types";
+import type {
+  ListingPhoto,
+  Screenshot,
+  ScreenshotDetail,
+  Stats,
+  UploadResult,
+} from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 export const API = `${BASE}/api`;
@@ -48,4 +54,33 @@ export async function resetChat(): Promise<{ deleted: number }> {
 
 export function imageUrl(sha: string): string {
   return `${API}/screenshots/${sha}/image`;
+}
+
+// ─── Фото товаров (галерея по item_number) ──────────────────────────────────
+
+export async function fetchListingPhotos(itemNumber: string): Promise<ListingPhoto[]> {
+  const data = await jsonFetch<{ photos: ListingPhoto[] }>(
+    `/listings/${encodeURIComponent(itemNumber)}/photos`,
+  );
+  return data.photos;
+}
+
+export async function uploadListingPhotos(itemNumber: string, files: File[]): Promise<void> {
+  const fd = new FormData();
+  for (const f of files) fd.append("files", f);
+  await jsonFetch(`/listings/${encodeURIComponent(itemNumber)}/photos`, {
+    method: "POST",
+    body: fd,
+  });
+}
+
+export async function deleteListingPhoto(itemNumber: string, photoId: number): Promise<void> {
+  await jsonFetch(`/listings/${encodeURIComponent(itemNumber)}/photos/${photoId}`, {
+    method: "DELETE",
+  });
+}
+
+/** photo.url уже содержит /api/... — добавляем только BASE (домен бэкенда). */
+export function listingPhotoUrl(photo: ListingPhoto): string {
+  return `${BASE}${photo.url}`;
 }

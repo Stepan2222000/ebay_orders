@@ -12,7 +12,7 @@ from .ocr import OcrError, transcribe
 from .util import detect_mime
 from .worker import run as worker_run
 
-USAGE = "usage: python -m app {api|worker|ocr-one <file>}"
+USAGE = "usage: python -m app {api|worker|ocr-one <file>|backfill-photos}"
 
 
 async def _ocr_one(path: str) -> int:
@@ -59,6 +59,9 @@ def main() -> None:
             print(USAGE, file=sys.stderr)
             sys.exit(1)
         sys.exit(asyncio.run(_ocr_one(sys.argv[2])))
+    elif cmd == "backfill-photos":
+        from .photos import backfill_all
+        asyncio.run(backfill_all())
     else:
         print(USAGE, file=sys.stderr)
         sys.exit(1)

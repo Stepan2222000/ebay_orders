@@ -10,6 +10,7 @@ import {
 import type { ScreenshotDetail } from "@/lib/types";
 import StatusPill from "./StatusPill";
 import ConfirmDialog from "./ConfirmDialog";
+import ItemGallery from "./ItemGallery";
 import styles from "./ScreenshotDetailModal.module.css";
 
 function fmtDuration(startIso: string, endIso: string | null): string | null {
@@ -209,6 +210,9 @@ export default function ScreenshotDetailModal({
                                 {it.item_line_total_text ? ` · ${it.item_line_total_text}` : ""}
                                 {it.item_number ? ` · #${it.item_number}` : ""}
                               </span>
+                              {it.item_number ? (
+                                <ItemGallery itemNumber={String(it.item_number)} />
+                              ) : null}
                             </li>
                           ))}
                         </ul>

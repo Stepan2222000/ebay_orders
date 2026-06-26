@@ -31,6 +31,13 @@ class Settings:
     worker_idle_sleep_s: float = 0.5
     max_screenshot_bytes: int = 10 * 1024 * 1024  # 10 MiB
 
+    # фото товаров: конкуренция фото-операций (eBay+MinIO) и сколько раз пробовать
+    # номер до терминального failed (защита от «шторма» и от вечных ретраев)
+    photo_concurrency: int = 6
+    photo_max_attempts: int = 3
+    manual_photo_bucket: str = "ebay-orders-my-photos"
+    manual_photo_max_dim: int = 1600  # кап по длинной стороне
+
 
 def load() -> Settings:
     return Settings(
@@ -42,6 +49,7 @@ def load() -> Settings:
         openai_api_key=os.environ["OPENAI_API_KEY"],
         openai_base_url=os.environ.get("OPENAI_BASE_URL") or _DEFAULT_BASE_URL,
         worker_concurrency=int(os.environ.get("WORKER_CONCURRENCY", 10)),
+        photo_concurrency=int(os.environ.get("PHOTO_CONCURRENCY", 6)),
     )
 
 
