@@ -65,13 +65,23 @@ export async function fetchListingPhotos(itemNumber: string): Promise<ListingPho
   return data.photos;
 }
 
-export async function uploadListingPhotos(itemNumber: string, files: File[]): Promise<void> {
+export interface UploadedPhoto {
+  id?: number;
+  source?: string;
+  duplicate?: boolean;
+}
+
+export async function uploadListingPhotos(
+  itemNumber: string,
+  files: File[],
+): Promise<UploadedPhoto[]> {
   const fd = new FormData();
   for (const f of files) fd.append("files", f);
-  await jsonFetch(`/listings/${encodeURIComponent(itemNumber)}/photos`, {
-    method: "POST",
-    body: fd,
-  });
+  const data = await jsonFetch<{ photos: UploadedPhoto[] }>(
+    `/listings/${encodeURIComponent(itemNumber)}/photos`,
+    { method: "POST", body: fd },
+  );
+  return data.photos;
 }
 
 export async function deleteListingPhoto(itemNumber: string, photoId: number): Promise<void> {

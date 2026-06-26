@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Plus, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Plus, Trash2, X } from "lucide-react";
 import {
   deleteListingPhoto,
   fetchListingPhotos,
@@ -17,13 +17,13 @@ export default function ItemGallery({ itemNumber }: { itemNumber: string }) {
   const [photos, setPhotos] = useState<ListingPhoto[] | null>(null);
   const [active, setActive] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(() => {
-    fetchListingPhotos(itemNumber)
-      .then(setPhotos)
-      .catch(() => setPhotos([]));
-  }, [itemNumber]);
+  const load = useCallback(
+    () => fetchListingPhotos(itemNumber).then(setPhotos).catch(() => setPhotos([])),
+    [itemNumber],
+  );
 
   useEffect(() => {
     load();
@@ -34,11 +34,15 @@ export default function ItemGallery({ itemNumber }: { itemNumber: string }) {
     if (fileRef.current) fileRef.current.value = "";
     if (!files.length) return;
     setBusy(true);
+    setError(null);
     try {
-      await uploadListingPhotos(itemNumber, files);
-      load();
+      const res = await uploadListingPhotos(itemNumber, files);
+      await load();                                   // ждём refetch — превью появляется сразу
+      if (res.length && res.every((p) => p.duplicate)) {
+        setError(files.length > 1 ? "эти фото уже добавлены" : "это фото уже добавлено");
+      }
     } catch (err) {
-      console.error(err);
+      setError((err as Error).message || "не удалось загрузить");
     } finally {
       setBusy(false);
     }
@@ -90,7 +94,7 @@ export default function ItemGallery({ itemNumber }: { itemNumber: string }) {
           disabled={busy}
           title="добавить своё фото"
         >
-          <Plus size={16} />
+          {busy ? <Loader2 size={16} className={styles.spin} /> : <Plus size={16} />}
         </button>
         <input
           ref={fileRef}
@@ -101,6 +105,8 @@ export default function ItemGallery({ itemNumber }: { itemNumber: string }) {
           onChange={onPick}
         />
       </div>
+
+      {error ? <div className={styles.error}>{error}</div> : null}
 
       {cur ? (
         <div className={styles.lightbox} onClick={() => setActive(null)}>
