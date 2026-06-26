@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 
 import anyio
 import asyncpg
+import httpx
 from openai import AsyncOpenAI
 from fastapi import APIRouter, FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +30,7 @@ from .agent import stream_stage_b
 from .config import settings
 from .db import close, dump_schema_text, pool
 from .listener import PgFanout
+from .photos import delete_manual_photo, store_manual_photo
 from .prompt import SYSTEM_PROMPT_STAGE_B
 from .stream import SSE_HEADERS, sse
 from .util import detect_mime, sha256
@@ -58,9 +60,12 @@ async def lifespan(app: FastAPI):
         channels=_FANOUT_CHANNELS,
     )
     await app.state.fanout.start()
+    # клиент для https-прокси картинок из MinIO (сайт по https, MinIO по http)
+    app.state.http = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
     try:
         yield
     finally:
+        await app.state.http.aclose()
         await app.state.fanout.close()
         await app.state.llm.close()
         await close()
@@ -579,6 +584,74 @@ async def chat_post(request: Request):
                         log.error("failed to persist assistant msg: %s", e)
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+# ─── Фото товаров: галерея + https-прокси + ручная загрузка ────────────────
+
+
+@api.get("/listings/{item_number}/photos")
+async def listing_gallery(item_number: str):
+    """Галерея товара по item_number: eBay (по idx) затем ручные. Фронт берёт
+    проксированный `url`, не трогая MinIO напрямую (mixed content)."""
+    rows = await (await pool()).fetch(
+        "SELECT id, source, idx FROM item_photos "
+        "WHERE item_number = $1 ORDER BY (source = 'manual'), idx, id",
+        item_number,
+    )
+    return {"photos": [
+        {
+            "id": r["id"],
+            "source": r["source"],
+            "url": f"/api/listings/{item_number}/photos/{r['id']}/image",
+        }
+        for r in rows
+    ]}
+
+
+@api.get("/listings/{item_number}/photos/{photo_id}/image")
+async def listing_photo_image(item_number: str, photo_id: int, request: Request):
+    """https-прокси одной картинки: бэкенд тянет из MinIO (http, серверно) и
+    отдаёт по https — иначе браузер блокирует mixed content."""
+    row = await (await pool()).fetchrow(
+        "SELECT s3_url FROM item_photos WHERE id = $1 AND item_number = $2",
+        photo_id, item_number,
+    )
+    if row is None:
+        raise HTTPException(404, "не найдено")
+    try:
+        r = await request.app.state.http.get(row["s3_url"])
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"minio: {e}")
+    if r.status_code != 200:
+        raise HTTPException(502, f"minio status {r.status_code}")
+    return Response(
+        content=r.content,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
+@api.post("/listings/{item_number}/photos")
+async def upload_listing_photo(item_number: str, files: list[UploadFile]):
+    """Ручная загрузка фото товара: любой формат → JPEG (кап 1600) → свой бакет."""
+    out = []
+    for f in files:
+        data = await f.read()
+        if len(data) > settings.max_screenshot_bytes:
+            raise HTTPException(413, f"{f.filename}: больше 10 МБ")
+        try:
+            out.append(await store_manual_photo(item_number, data))
+        except Exception as e:                       # noqa: BLE001 — невалидное изображение
+            raise HTTPException(415, f"{f.filename}: не удалось обработать ({e})")
+    return {"photos": out}
+
+
+@api.delete("/listings/{item_number}/photos/{photo_id}")
+async def delete_listing_photo(item_number: str, photo_id: int):
+    """Удалить ручное фото (строка + объект в MinIO). eBay-фото удалять нельзя."""
+    if not await delete_manual_photo(item_number, photo_id):
+        raise HTTPException(404, "не найдено или не ручное фото")
+    return {"deleted": photo_id}
 
 
 app.include_router(api)
