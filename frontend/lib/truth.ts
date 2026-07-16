@@ -126,6 +126,18 @@ export interface Numbers {
   catalog_conflicts: NumberRow[];
   ignored: NumberRow[];
   hidden_known_crosses: number;
+  hidden_trash: number;
+}
+
+export interface ExampleRow {
+  id: number;
+  item_number: string;
+  item_title: string;
+  kind: string;
+  human_lines: ResolvedLine[];
+  agent_snapshot: { verdict?: string; positions?: RunPosition[] } | null;
+  note: string | null;
+  created_at: string;
 }
 
 export interface Rule {
@@ -153,10 +165,13 @@ export const rerunListing = (n: string) =>
   j<{ started: boolean }>(`/truth/listing/${n}/rerun`, { method: "POST", body: "{}" });
 export const resolvePreview = (lines: { article: string; qty: number }[]) =>
   j<{ lines: ResolvedLine[] }>("/truth/resolve", { method: "POST", body: JSON.stringify({ lines }) });
-export const saveComposition = (n: string, lines: { article: string; qty: number }[]) =>
-  j<{ composition: ResolvedLine[] }>(`/truth/listing/${n}/composition`, {
-    method: "PUT", body: JSON.stringify({ lines }),
+export const saveComposition = (n: string, lines: { article: string; qty: number }[], note?: string) =>
+  j<{ composition: ResolvedLine[]; example_kind: string | null }>(`/truth/listing/${n}/composition`, {
+    method: "PUT", body: JSON.stringify({ lines, note }),
   });
+export const fetchExamples = () => j<{ examples: ExampleRow[] }>("/truth/examples");
+export const deleteExample = (id: number) =>
+  j<{ deleted: number }>(`/truth/examples/${id}`, { method: "DELETE" });
 export const resolveCard = (id: number, resolution?: string, titleCanon?: "ocr" | "pdp") =>
   j<{ resolved: number }>(`/truth/cards/${id}/resolve`, {
     method: "POST", body: JSON.stringify({ resolution, title_canon: titleCanon }),

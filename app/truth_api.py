@@ -222,14 +222,16 @@ async def _resolve_lines(conn, lines: list[dict]) -> list[dict]:
         raw = str(ln.get("article", "")).strip()
         qty = max(1, int(ln.get("qty", 1) or 1))
         cands = extract_candidates(raw, rules) if raw else set()
+        up = raw.upper()
+        tries = [up, up.replace(" ", "")] + sorted(cands, key=len, reverse=True)
         best, part = None, None
-        for c in sorted(cands, key=len, reverse=True):
+        for c in dict.fromkeys(t for t in tries if t):
             row = await conn.fetchrow(
-                "SELECT pa.part_id, p.name FROM smart_fdw.part_articles pa "
+                "SELECT pa.article, pa.part_id, p.name FROM smart_fdw.part_articles pa "
                 "JOIN smart_fdw.parts p ON p.id = pa.part_id "
                 "WHERE upper(pa.article) = $1", c)
             if row:
-                best, part = c, dict(row)
+                best, part = row["article"], dict(row)
                 break
         if best is None and cands:
             best = max(cands, key=len)
@@ -237,7 +239,7 @@ async def _resolve_lines(conn, lines: list[dict]) -> list[dict]:
             "article": raw, "qty": qty, "canonical": best,
             "part_id": part["part_id"] if part else None,
             "part_name": part["name"] if part else None,
-            "gate": "ok" if cands else "uncovered",
+            "gate": "ok" if (cands or part) else "uncovered",
         })
     return out
 
@@ -251,9 +253,49 @@ async def resolve_preview(request: Request):
         return {"lines": await _resolve_lines(conn, body.get("lines") or [])}
 
 
+def _norm_num(s: str) -> str:
+    return re.sub(r"\s+", "", (s or "")).strip().upper()
+
+
+async def _classify_example(conn, resolved: list[dict], run) -> str:
+    """Детерминированная причина расхождения (не LLM): смотрим на ПРАВИЛЬНЫЙ
+    (человеческий) номер. Не проходит правила → «rule» (дыра в brands_mapping,
+    даже если внешне ошибка смысловая — без правила агент был слеп). Проходит,
+    но в прогоне его не было ни в подсказках, ни в прочитанном → «not_seen».
+    Был полностью доступен → «semantic»."""
+    rules = await get_rules(conn)
+    ctx = (run["input_context"] or {}) if run else {}
+    hints = {_norm_num(c) for c in (ctx.get("candidates") or {})}
+    seen: set[str] = set()
+    for pp in (run["positions"] or []) if run else []:
+        seen |= {_norm_num(pp.get("article_read", "")), _norm_num(pp.get("canonical") or "")}
+    for na in (run["near_articles"] or []) if run else []:
+        seen.add(_norm_num(na.get("text", "")))
+    seen.discard("")
+
+    kinds: set[str] = set()
+    for r in resolved:
+        n_raw, n_canon = _norm_num(r["article"]), _norm_num(r.get("canonical") or "")
+        covered = bool(extract_candidates(r["article"], rules))
+        if not covered:
+            kinds.add("rule")
+        elif run is None:
+            kinds.add("unclear")
+        elif not ({n_raw, n_canon} & (hints | seen)):
+            kinds.add("not_seen")
+        else:
+            kinds.add("semantic")
+    for k in ("rule", "not_seen", "semantic"):
+        if k in kinds:
+            return k
+    return "unclear"
+
+
 @truth_api.put("/listing/{item_number}/composition")
 async def put_composition(item_number: str, request: Request):
-    """Ручная правка состава → human-строки. Всё-или-ничего, как у агента."""
+    """Ручная правка состава → human-строки (всё-или-ничего, как у агента).
+    Если правка меняет истину относительно агентской — автоматически пишется
+    пример с меткой причины (материал для правки правил/промпта)."""
     body = await request.json()
     lines = body.get("lines") or []
     if not lines:
@@ -268,6 +310,18 @@ async def put_composition(item_number: str, request: Request):
         bad = [r for r in resolved if not r["part_id"]]
         if bad:
             raise HTTPException(422, detail={"lines": resolved})
+
+        prior = [dict(r) for r in await conn.fetch(
+            "SELECT part_id, quantity, match_method FROM item_parts "
+            "WHERE item_number = $1", item_number)]
+        run = await conn.fetchrow("""
+            SELECT id, verdict, positions, near_articles, contradictions,
+                   input_context
+              FROM agent_runs
+             WHERE item_number = $1 AND status = 'done' AND dry_run = false
+             ORDER BY created_at DESC LIMIT 1""", item_number)
+
+        example_kind = None
         async with conn.transaction():
             agg: dict[str, dict] = {}
             for r in resolved:
@@ -293,7 +347,47 @@ async def put_composition(item_number: str, request: Request):
                     WHERE item_number = $1 AND status = 'open'
                       AND kind IN ('contradiction', 'human_disagreement')""",
                 item_number)
-    return {"composition": resolved}
+
+            # пример: только если правка реально меняет истину агента/прежнюю
+            agent_agg = {r["part_id"]: r["quantity"] for r in prior
+                         if r["match_method"] in ("agent", "regex_exact")}
+            human_agg = {pid: a["qty"] for pid, a in agg.items()}
+            changed = agent_agg != human_agg or (run and run["verdict"] != "linked")
+            if changed:
+                example_kind = await _classify_example(conn, resolved, run)
+                await conn.execute(
+                    """INSERT INTO match_examples(item_number, kind, human_lines,
+                                                  agent_snapshot, run_id, note)
+                       VALUES ($1, $2, $3, $4, $5, $6)""",
+                    item_number, example_kind, resolved,
+                    {"verdict": run["verdict"], "positions": run["positions"],
+                     "near_articles": run["near_articles"],
+                     "contradictions": run["contradictions"],
+                     "input_context": run["input_context"],
+                     "prior_parts": prior} if run else {"prior_parts": prior},
+                    run["id"] if run else None,
+                    (body.get("note") or "").strip() or None)
+    return {"composition": resolved, "example_kind": example_kind}
+
+
+@truth_api.get("/examples")
+async def examples_list():
+    p = await pool()
+    rows = await p.fetch("""
+        SELECT e.id, e.item_number, e.kind, e.human_lines, e.agent_snapshot,
+               e.note, e.created_at, i.item_title
+          FROM match_examples e JOIN items i USING (item_number)
+         ORDER BY e.created_at DESC LIMIT 500""")
+    return {"examples": [dict(r) for r in rows]}
+
+
+@truth_api.delete("/examples/{example_id}")
+async def example_delete(example_id: int):
+    p = await pool()
+    n = await p.execute("DELETE FROM match_examples WHERE id = $1", example_id)
+    if n == "DELETE 0":
+        raise HTTPException(404, "примера нет")
+    return {"deleted": example_id}
 
 
 # ─── Карточки ────────────────────────────────────────────────────────────────
@@ -324,10 +418,18 @@ async def resolve_card(card_id: int, request: Request):
     return {"resolved": card_id}
 
 
-# ─── «Непокрытые номера» ─────────────────────────────────────────────────────
+# ─── «Замеченные номера» ─────────────────────────────────────────────────────
+
+_TRASH_WHY = re.compile(
+    r"штрих|баркод|upc|ean|дата|год[ыау]?|колич|цена|индекс|адрес|парти|серийн|печат|lot",
+    re.IGNORECASE)
+
 
 @truth_api.get("/numbers")
 async def numbers():
+    """Номера группируются по ЦЕЛЬНОМУ тексту, как прочитал агент (разрезание
+    правилами давало осколки и ложные привязки к листингам). Классы — по
+    каталогу; явный мусор (агент сам пишет «штрихкод/дата») прячется."""
     p = await pool()
     async with p.acquire() as conn:
         rules = await get_rules(conn)
@@ -338,7 +440,7 @@ async def numbers():
         ignores = {r["normalized"]: r["reason"] for r in await conn.fetch(
             "SELECT normalized, reason FROM near_article_ignores")}
 
-        entries: dict[str, dict] = {}     # normalized -> {..., listings, whys}
+        entries: dict[str, dict] = {}     # цельный номер -> агрегат
         part_arts: dict[str, set[str]] = {}
         for r in rows:
             raw = [(n["text"], n.get("why", "")) for n in (r["near_articles"] or [])]
@@ -348,46 +450,56 @@ async def numbers():
             for pid in pids:
                 part_arts.setdefault(pid, set())
             for text, why in raw:
-                cands = extract_candidates(text, rules) or \
-                    {text.replace(" ", "").upper()}
-                for c in cands:
-                    if len(c) < 4:
-                        continue
-                    e = entries.setdefault(c, {"normalized": c, "count": 0,
-                                               "listings": set(), "why": why[:120],
-                                               "own_parts": set()})
-                    e["count"] += 1
-                    e["listings"].add(r["item_number"])
-                    e["own_parts"].update(pids)
+                key = re.sub(r"\s+", " ", (text or "")).strip().upper()
+                if len(key.replace(" ", "")) < 4:
+                    continue
+                e = entries.setdefault(key, {"normalized": key, "count": 0,
+                                             "listings": set(), "why": why[:120],
+                                             "own_parts": set(), "trash": True})
+                e["count"] += 1
+                e["listings"].add(r["item_number"])
+                e["own_parts"].update(pids)
+                if not _TRASH_WHY.search(why or ""):
+                    e["trash"] = False    # хоть одно осмысленное упоминание — не мусор
 
         if part_arts:
             for r in await conn.fetch(
                     "SELECT id, articles FROM smart_fdw.parts WHERE id = ANY($1::text[])",
                     list(part_arts)):
                 part_arts[r["id"]] = {a.upper() for a in (r["articles"] or [])}
+
+        lookup_map: dict[str, set[str]] = {}
+        for key in entries:
+            variants = {key, key.replace(" ", "")} | extract_candidates(key, rules)
+            lookup_map[key] = {v for v in variants if v}
+        all_variants = sorted({v for vs in lookup_map.values() for v in vs})
         cat = {r["art"]: r["part_id"] for r in await conn.fetch(
             "SELECT upper(article) AS art, part_id FROM smart_fdw.part_articles "
-            "WHERE upper(article) = ANY($1::text[])", list(entries))}
+            "WHERE upper(article) = ANY($1::text[])", all_variants)} if all_variants else {}
 
-    candidates, conflicts, known, ignored = [], [], 0, []
-    for c, e in entries.items():
+    candidates, conflicts, ignored, known, trash = [], [], [], 0, 0
+    for key, e in entries.items():
         own = set().union(*(part_arts.get(pid, set()) for pid in e["own_parts"])) \
             if e["own_parts"] else set()
-        row = {"normalized": c, "count": e["count"],
+        hits = {v: cat[v] for v in lookup_map[key] if v in cat}
+        row = {"normalized": key, "count": e["count"],
                "listings": sorted(e["listings"]), "why": e["why"]}
-        if c in ignores:
-            ignored.append({**row, "reason": ignores[c]})
-        elif c in own:
+        if key in ignores:
+            ignored.append({**row, "reason": ignores[key]})
+        elif lookup_map[key] & own:
             known += 1                     # уже кросс сматченной детали — прячем
-        elif c in cat:
-            conflicts.append({**row, "other_part_id": cat[c]})
+        elif hits:
+            row["other_part_id"] = next(iter(hits.values()))
+            conflicts.append(row)
+        elif e["trash"]:
+            trash += 1                     # агент сам назвал мусором — прячем
         else:
             candidates.append(row)
     candidates.sort(key=lambda r: -r["count"])
     conflicts.sort(key=lambda r: -r["count"])
     ignored.sort(key=lambda r: r["normalized"])
     return {"candidates": candidates, "catalog_conflicts": conflicts,
-            "ignored": ignored, "hidden_known_crosses": known}
+            "ignored": ignored, "hidden_known_crosses": known, "hidden_trash": trash}
 
 
 @truth_api.post("/numbers/ignore")

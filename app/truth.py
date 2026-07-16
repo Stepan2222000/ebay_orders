@@ -50,7 +50,7 @@ log = logging.getLogger(__name__)
 
 DESC_CAND_CAP = 20        # кандидатов только-из-description сверх капа режем с пометкой
 DESC_TEXT_CAP = 3000
-PROMPT_REV = "v2"         # входит в отпечаток: смена промпта = новый вход
+PROMPT_REV = "v3"         # входит в отпечаток: смена промпта = новый вход
 
 SCHEMA = {
     "type": "object",
@@ -104,7 +104,7 @@ Rules:
 - Mercury/Quicksilver numbers are often written with a space before a short trailing group ("805759T 1", "88397A 1", "84-816761a 4"): the trailing 1-2 characters are PART of the number (805759T1, 88397A1, 816761A4), not a quantity — especially when the glued form appears in CATALOG CONTEXT or candidate hints. A bare digit after a P/N is almost never a quantity marker.
 - When a photo label shows an aftermarket maker's own number (Walker, Sierra, Martyr, GLM, …) while title/specifics carry the OEM number of the same part — both identify one part: pick the number that exists in CATALOG CONTEXT (usually the OEM one) and keep the other in near_articles as a cross-number.
 - contradictions: ONLY unresolved contradictions that affect which article/composition is correct (e.g. specifics MPN vs photo label disagree and you cannot justify a choice). If you resolved it with evidence — explain in note/near_articles instead, do not list here.
-- Anything that looks like a part number but you did not use (serials, model codes, internal component labels, cross-numbers) goes to near_articles with a reason.
+- near_articles: ONLY strings that are plausibly PART NUMBERS by meaning and context (cross-numbers, alternate/OEM numbers, internal component numbers) that you did not use, each with a reason. Judge by meaning: barcodes/UPC/EAN digits, dates, years, quantities, prices, zip codes, addresses, packaging/print lot codes are NOT part numbers — omit them entirely, do not list them anywhere.
 - One lot containing N units of a part is NOT a problem — put N into that position's qty. qty_note is ONLY for the listing's own sources contradicting each other about what one lot contains (e.g. title says "pair", photos clearly show one). The buyer's order quantity ({order_qtys}) is context, not a source of conflict.
 - Write all note/why/comment/contradictions texts in Russian.
 
@@ -281,24 +281,31 @@ async def _call_llm(inp: dict) -> tuple[dict, dict, str]:
 # ─── Постобработка: агент читает, код решает ─────────────────────────────────
 
 async def postprocess(conn, ans: dict) -> tuple[str, list[dict]]:
-    """Нормализация через правила → гейт → лукап → вердикт (SPEC §6)."""
+    """Нормализация через правила → гейт → лукап → вердикт (SPEC §6).
+
+    Лукап пробует и СЫРУЮ форму (каталог хранит номера вроде «816811-1» как
+    есть — каталог тоже «паспорт» номера), и кандидатов правил; каноном
+    становится каталожная форма. Гейт правил остаётся для всего, чего в
+    каталоге нет."""
     rules = await get_rules(conn)
     positions, uncovered = [], []
     for p in ans["positions"]:
+        raw = (p["article_read"] or "").strip().upper()
         cands = extract_candidates(p["article_read"], rules)
-        if not cands:
+        tries = [raw, raw.replace(" ", "")] + sorted(cands, key=len, reverse=True)
+        best, part = None, None
+        for c in dict.fromkeys(t for t in tries if t):
+            row = await conn.fetchrow(
+                "SELECT pa.article, pa.part_id, p.name FROM smart_fdw.part_articles pa "
+                "JOIN smart_fdw.parts p ON p.id = pa.part_id WHERE upper(pa.article) = $1", c)
+            if row:
+                best, part = row["article"], dict(row)
+                break
+        if part is None and not cands:
             uncovered.append(p["article_read"])
             positions.append({**p, "canonical": None, "part_id": None, "part_name": None,
                               "gate": "uncovered"})
             continue
-        best, part = None, None
-        for c in sorted(cands, key=len, reverse=True):
-            row = await conn.fetchrow(
-                "SELECT pa.part_id, p.name FROM smart_fdw.part_articles pa "
-                "JOIN smart_fdw.parts p ON p.id = pa.part_id WHERE upper(pa.article) = $1", c)
-            if row:
-                best, part = c, dict(row)
-                break
         if best is None:
             best = max(cands, key=len)
         positions.append({**p, "canonical": best,
@@ -405,9 +412,12 @@ async def run_listing(item_number: str, *, write: bool) -> dict | None:
         if inp is None:
             return None
         run_id = await conn.fetchval(
-            """INSERT INTO agent_runs(item_number, input_fingerprint, model, status, dry_run)
-               VALUES ($1, $2, $3, 'running', $4) RETURNING id""",
-            item_number, inp["fingerprint"], settings.truth_model, not write)
+            """INSERT INTO agent_runs(item_number, input_fingerprint, model, status,
+                                      dry_run, input_context)
+               VALUES ($1, $2, $3, 'running', $4, $5) RETURNING id""",
+            item_number, inp["fingerprint"], settings.truth_model, not write,
+            {"candidates": inp["candidates"], "catalog": inp["catalog"],
+             "n_photos": len(inp["photos"]), "qtys": inp["qtys"]})
     try:
         ans, usage, model = await _call_llm(inp)
     except (APIError, httpx.HTTPError, json.JSONDecodeError, KeyError) as e:

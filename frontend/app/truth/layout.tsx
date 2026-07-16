@@ -7,8 +7,7 @@ import styles from "./truth.module.css";
 
 const TABS = [
   { href: "/truth", label: "Разбор" },
-  { href: "/truth/numbers", label: "Номера" },
-  { href: "/truth/rules", label: "Правила" },
+  { href: "/truth/examples", label: "Примеры" },
 ];
 
 export default function TruthLayout({ children }: { children: React.ReactNode }) {
@@ -31,7 +30,7 @@ export default function TruthLayout({ children }: { children: React.ReactNode })
   return (
     <div className={styles.shell}>
       <header className={styles.header}>
-        <span className={styles.wordmark}>Истина</span>
+        <span className={styles.wordmark}>Артикулы</span>
         <nav className={styles.tabs}>
           {TABS.map((t) => {
             const active = t.href === "/truth"

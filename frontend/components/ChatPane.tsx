@@ -146,7 +146,7 @@ function ChatInner({
         </div>
         <div className={styles.headerActions}>
           <Link href="/truth" className={styles.resetBtn} style={{ textDecoration: "none" }}>
-            Истина →
+            Артикулы →
           </Link>
           <ThemeToggle />
           <button

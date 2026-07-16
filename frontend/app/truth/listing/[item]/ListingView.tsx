@@ -1,9 +1,9 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ageText, fetchListing, photoSrc, putSnapshotTexts, refetchSnapshot,
   rerunListing, resolveCard, resolvePreview, saveComposition,
-  STATUS_LABEL, type Listing, type ResolvedLine,
+  STATUS_LABEL, type Listing, type ResolvedLine, type RunPosition,
 } from "@/lib/truth";
 import { ToastProvider, useCopy, useToast } from "../../toast";
 import styles from "../../truth.module.css";
@@ -17,113 +17,145 @@ const STATUS_PILL: Record<string, string> = {
   pending: styles.pillGray,
 };
 
-const METHOD_PILL: Record<string, [string, string]> = {
-  agent: [styles.pillGreen, "агент"],
-  human: [styles.pillBlue, "human"],
-  regex_exact: [styles.pillGray, "regex ⚠ предварительно"],
+const SRC_LABEL: Record<string, string> = {
+  photo: "фото", title: "титул", description: "описание", specifics: "specifics",
 };
+
+const KIND_LABEL: Record<string, string> = {
+  rule: "пример: дыра в правилах", not_seen: "пример: агент не увидел",
+  semantic: "пример: ошибка смысла", unclear: "пример: причина неясна",
+};
+
+interface Row { article: string; qty: number; key: number; }
+
+/** Текст с редактированием по двойному клику. */
+function EditableText({ label, value, placeholder, onSave, mono }: {
+  label: string; value: string; placeholder: string; mono?: boolean;
+  onSave: (v: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { if (!editing) setDraft(value); }, [value, editing]);
+  return (
+    <div className={styles.textBlock}>
+      <div className={styles.formLabel}>{label} <span className={styles.hint}>двойной клик — редактировать</span></div>
+      {editing ? (
+        <>
+          <textarea className={styles.textarea} style={mono ? { fontFamily: "var(--font-mono)" } : undefined}
+            value={draft} autoFocus onChange={(e) => setDraft(e.target.value)} />
+          <div className={styles.actions} style={{ marginTop: 6 }}>
+            <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={busy || !draft.trim()}
+              onClick={async () => { setBusy(true); await onSave(draft); setBusy(false); setEditing(false); }}>
+              {busy ? <span className={styles.spin} /> : "Сохранить"}
+            </button>
+            <button className={`${styles.btn} ${styles.btnGhost}`} onClick={() => setEditing(false)}>отмена</button>
+          </div>
+        </>
+      ) : (
+        <div className={`${styles.textView} ${!value ? styles.textEmpty : ""}`}
+          onDoubleClick={() => setEditing(true)} title="двойной клик — редактировать">
+          {value || placeholder}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Inner({ item }: { item: string }) {
   const [d, setD] = useState<Listing | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [photoIdx, setPhotoIdx] = useState(0);
-  const [editing, setEditing] = useState(false);
-  const [lines, setLines] = useState<{ article: string; qty: number }[]>([]);
+  const [rows, setRows] = useState<Row[]>([]);
+  const [baseline, setBaseline] = useState("");        // для dirty-сравнения
   const [resolved, setResolved] = useState<ResolvedLine[]>([]);
-  const [texting, setTexting] = useState(false);
-  const [specRaw, setSpecRaw] = useState("");
-  const [descRaw, setDescRaw] = useState("");
+  const [note, setNote] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const keyRef = useRef(1);
   const copy = useCopy();
   const toast = useToast();
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async () => {
-    try { setD(await fetchListing(item)); setErr(null); }
-    catch (e) { setErr(String(e)); }
-  }, [item]);
+  const initRows = useCallback((data: Listing) => {
+    const run = data.runs.find((r) => r.status === "done" && !r.dry_run);
+    const src: Row[] = data.composition.length
+      ? data.composition.map((c) => ({ article: c.matched_article, qty: c.quantity, key: keyRef.current++ }))
+      : (run?.positions || []).map((p) => ({
+          article: p.canonical || p.article_read, qty: Math.max(1, p.qty), key: keyRef.current++ }));
+    setRows(src);
+    setBaseline(JSON.stringify(src.map((r) => [r.article, r.qty])));
+    setResolved([]);
+    setNote("");
+  }, []);
 
-  useEffect(() => { load(); }, [load]);
+  const load = useCallback(async (reinit = false) => {
+    try {
+      const data = await fetchListing(item);
+      setD(data); setErr(null);
+      if (reinit) initRows(data);
+      return data;
+    } catch (e) { setErr(String(e)); return null; }
+  }, [item, initRows]);
 
-  // пока агент думает — обновляемся чаще
+  useEffect(() => { load(true); }, [load]);
+
+  const dirty = useMemo(
+    () => JSON.stringify(rows.map((r) => [r.article, r.qty])) !== baseline,
+    [rows, baseline]);
+
+  // фоновое обновление — только пока не редактируешь
   useEffect(() => {
-    const t = setInterval(load, d?.agent_running ? 3000 : 15000);
+    const t = setInterval(async () => {
+      if (dirty) return;
+      const data = await load(false);
+      if (data && !dirty) initRows(data);
+    }, d?.agent_running ? 3000 : 20000);
     return () => clearInterval(t);
-  }, [load, d?.agent_running]);
+  }, [load, initRows, dirty, d?.agent_running]);
 
-  // живая валидация редактора состава
+  // живая валидация строк
   useEffect(() => {
-    if (!editing) return;
     if (debounce.current) clearTimeout(debounce.current);
     debounce.current = setTimeout(async () => {
-      const filled = lines.filter((l) => l.article.trim());
+      const filled = rows.filter((r) => r.article.trim());
       if (!filled.length) { setResolved([]); return; }
-      try { setResolved((await resolvePreview(filled)).lines); } catch { /* ignore */ }
-    }, 350);
-  }, [lines, editing]);
+      try {
+        setResolved((await resolvePreview(filled.map((r) => ({ article: r.article, qty: r.qty })))).lines);
+      } catch { /* ignore */ }
+    }, 300);
+  }, [rows]);
 
   if (err) return <div className={`${styles.alert} ${styles.alertRed}`}>{err}</div>;
   if (!d) return <div className={styles.zeroState}><span className={styles.spin} /> загрузка…</div>;
 
   const run = d.runs.find((r) => r.status === "done" && !r.dry_run) || d.runs[0];
+  const posInfo = new Map<string, RunPosition>();
+  for (const p of run?.positions || []) {
+    for (const k of [p.canonical, p.article_read]) if (k) posInfo.set(k.toUpperCase(), p);
+  }
   const openCards = d.cards.filter((c) => c.status === "open");
   const photo = d.photos[photoIdx];
   const snap = d.snapshot as Record<string, string> | null;
+  const isHuman = d.composition.length > 0 && d.composition.every((c) => c.match_method === "human");
 
-  const startEdit = () => {
-    setLines(d.composition.length
-      ? d.composition.map((c) => ({ article: c.matched_article, qty: c.quantity }))
-      : [{ article: "", qty: 1 }]);
-    setResolved([]);
-    setEditing(true);
-  };
-
-  const allOk = resolved.length > 0 && resolved.every((r) => r.part_id)
-    && resolved.length === lines.filter((l) => l.article.trim()).length;
+  const filled = rows.filter((r) => r.article.trim());
+  const allOk = filled.length > 0 && resolved.length === filled.length && resolved.every((r) => r.part_id);
 
   const doSave = async () => {
     setBusy("save");
     try {
-      await saveComposition(item, lines.filter((l) => l.article.trim()));
-      toast("состав сохранён как human");
-      setEditing(false);
-      await load();
+      const res = await saveComposition(item, filled.map((r) => ({ article: r.article, qty: r.qty })), note);
+      toast(res.example_kind ? `сохранено · ${KIND_LABEL[res.example_kind]}` : "сохранено как human");
+      const data = await load(false);
+      if (data) initRows(data);
     } catch (e) { toast(`ошибка: ${e}`); }
     setBusy(null);
   };
 
-  const doRerun = async () => {
-    setBusy("rerun");
-    try { await rerunListing(item); toast("прогон запущен"); await load(); }
+  const act = (name: string, fn: () => Promise<unknown>, done: string) => async () => {
+    setBusy(name);
+    try { await fn(); toast(done); const data = await load(false); if (data && !dirty) initRows(data); }
     catch (e) { toast(`${e}`); }
-    setBusy(null);
-  };
-
-  const doRefetch = async () => {
-    setBusy("refetch");
-    try { await refetchSnapshot(item); toast("снапшот перекачан"); await load(); }
-    catch (e) { toast(`${e}`); }
-    setBusy(null);
-  };
-
-  const doTexts = async () => {
-    setBusy("texts");
-    try {
-      await putSnapshotTexts(item, specRaw, descRaw);
-      toast("тексты сохранены — агент перепрогонит сам");
-      setTexting(false);
-      await load();
-    } catch (e) { toast(`${e}`); }
-    setBusy(null);
-  };
-
-  const confirmHuman = async () => {
-    setBusy("confirm");
-    try {
-      await saveComposition(item, d.composition.map((c) => ({ article: c.matched_article, qty: c.quantity })));
-      toast("подтверждено как human");
-      await load();
-    } catch (e) { toast(`ошибка: ${e}`); }
     setBusy(null);
   };
 
@@ -149,19 +181,18 @@ function Inner({ item }: { item: string }) {
         )}
       </div>
 
-      {/* ── Истина ── */}
+      {/* ── Правая колонка ── */}
       <div>
         <div className={styles.panel}>
           <span className={`${styles.pill} ${STATUS_PILL[d.item.match_status] || styles.pillGray}`}>
             {STATUS_LABEL[d.item.match_status] || d.item.match_status}
           </span>
+          {isHuman && <span className={`${styles.pill} ${styles.pillBlue}`} style={{ marginLeft: 6 }}>human</span>}
           {d.agent_running && <span style={{ marginLeft: 10 }}><span className={styles.spin} /> агент думает…</span>}
           <div className={styles.listingTitle}>{d.item.item_title}</div>
           <div className={styles.metaLine}>
             <button className={styles.copy} onClick={() => copy(item)}>{item}</button>
-            {d.orders.map((o) => (
-              <span key={o.order_id}>заказ {o.order_number} ×{o.item_quantity}</span>
-            ))}
+            {d.orders.map((o) => <span key={o.order_id}>заказ {o.order_number} ×{o.item_quantity}</span>)}
             {run?.lot_kind && <span>{run.lot_kind}</span>}
             <span>{ageText(d.item.matched_at ? (Date.now() - Date.parse(d.item.matched_at)) / 1000 : null)}</span>
           </div>
@@ -180,11 +211,11 @@ function Inner({ item }: { item: string }) {
                 </div>
                 <div className={styles.actions}>
                   <button className={styles.btn} disabled={!!busy}
-                    onClick={async () => { await resolveCard(c.id, undefined, "pdp"); toast("канон = страница"); load(); }}>
+                    onClick={act("card", () => resolveCard(c.id, undefined, "pdp"), "канон = страница")}>
                     канон — со страницы
                   </button>
                   <button className={styles.btn} disabled={!!busy}
-                    onClick={async () => { await resolveCard(c.id, undefined, "ocr"); toast("канон = скриншот"); load(); }}>
+                    onClick={act("card", () => resolveCard(c.id, undefined, "ocr"), "канон = скриншот")}>
                     канон — со скриншота
                   </button>
                 </div>
@@ -199,7 +230,7 @@ function Inner({ item }: { item: string }) {
                 </div>
                 <div className={styles.actions}>
                   <button className={styles.btn} disabled={!!busy}
-                    onClick={async () => { await resolveCard(c.id, "разобрано, оставить как есть"); toast("карточка закрыта"); load(); }}>
+                    onClick={act("card", () => resolveCard(c.id, "разобрано, оставить как есть"), "карточка закрыта")}>
                     закрыть без правки
                   </button>
                 </div>
@@ -208,112 +239,88 @@ function Inner({ item }: { item: string }) {
           </div>
         ))}
 
-        {/* состав */}
+        {/* ── Состав: всегда виден, редактируется на месте ── */}
         <div className={styles.panel}>
-          <h3 className={styles.panelTitle}>Состав лота</h3>
-          {!editing && d.composition.length === 0 && (
-            <div className={styles.comment}>строк нет — истина не готова ({STATUS_LABEL[d.item.match_status] || d.item.match_status})</div>
-          )}
-          {!editing && d.composition.map((c) => {
-            const [pill, label] = METHOD_PILL[c.match_method] || [styles.pillGray, c.match_method];
+          <h3 className={styles.panelTitle}>
+            Состав лота
+            {d.composition.length === 0 && rows.length > 0 &&
+              <span className={`${styles.pill} ${styles.pillAmber}`}>прочитано агентом, не записано</span>}
+          </h3>
+          {rows.length === 0 && <div className={styles.comment}>агент не нашёл ни одного артикула — добавь строки сам</div>}
+
+          {rows.map((r, i) => {
+            const res = resolved[filled.findIndex((f) => f.key === r.key)];
+            const info = posInfo.get((res?.canonical || r.article).toUpperCase())
+              || posInfo.get(r.article.toUpperCase());
             return (
-              <div key={c.part_id} className={styles.compRow}>
-                <span className={styles.compArticle} onClick={() => copy(c.matched_article)}>{c.matched_article}</span>
-                <span className={styles.compName}>{c.part_name || c.part_id}</span>
-                <span className={`${styles.pill} ${pill}`}>{label}</span>
-                <span className={styles.compQty}>×{c.quantity}</span>
+              <div key={r.key} className={styles.compRowEdit}>
+                <input className={`${styles.inlineInput} ${styles.mono}`} value={r.article}
+                  placeholder="артикул"
+                  onChange={(e) => setRows(rows.map((x) => x.key === r.key ? { ...x, article: e.target.value } : x))} />
+                <span className={styles.compName}>
+                  {r.article.trim() === "" ? "" :
+                    res == null ? <span className={styles.spin} /> :
+                    res.part_id ? <span className={styles.ok}>✓ {res.part_name}</span> :
+                    <span className={styles.bad}>{res.gate === "uncovered" ? "не покрыт правилами" : "нет в каталоге"}</span>}
+                </span>
+                {info && (
+                  <span className={styles.srcBadges} title={info.note || ""}>
+                    {(info.sources || []).map((s) => (
+                      <span key={s} className={`${styles.pill} ${styles.pillGray}`}>{SRC_LABEL[s] || s}</span>
+                    ))}
+                  </span>
+                )}
+                <span className={styles.qtyWrap}>×<input type="number" min={1}
+                  className={`${styles.inlineInput} ${styles.inlineQty}`} value={r.qty}
+                  onChange={(e) => setRows(rows.map((x) => x.key === r.key ? { ...x, qty: Math.max(1, +e.target.value || 1) } : x))} /></span>
+                <button className={styles.iconBtn} title="убрать строку"
+                  onClick={() => setRows(rows.filter((x) => x.key !== r.key))}>✕</button>
               </div>
             );
           })}
 
-          {editing && (
-            <>
-              {lines.map((l, i) => {
-                const r = resolved[lines.filter((x, j) => j < i && x.article.trim()).length];
-                const has = l.article.trim();
-                return (
-                  <div key={i} className={styles.editRow}>
-                    <input className={styles.editInput} placeholder="артикул, напр. 26-88397A 1"
-                      value={l.article} autoFocus={i === lines.length - 1}
-                      onChange={(e) => setLines(lines.map((x, j) => j === i ? { ...x, article: e.target.value } : x))} />
-                    <input className={`${styles.editInput} ${styles.editQty}`} type="number" min={1}
-                      value={l.qty}
-                      onChange={(e) => setLines(lines.map((x, j) => j === i ? { ...x, qty: Math.max(1, +e.target.value || 1) } : x))} />
-                    <span className={styles.editStatus}>
-                      {has && r ? (r.part_id
-                        ? <span className={styles.ok}>✓ {r.canonical} → {r.part_name}</span>
-                        : <span className={styles.bad}>✗ {r.gate === "uncovered" ? "не покрыт правилами" : "нет в каталоге"} {r.canonical && <button className={styles.copy} onClick={() => copy(r.canonical!)}>{r.canonical}</button>}</span>)
-                        : null}
-                    </span>
-                    <button className={styles.iconBtn} title="убрать строку"
-                      onClick={() => setLines(lines.filter((_, j) => j !== i))}>✕</button>
-                  </div>
-                );
-              })}
-              <div className={styles.actions}>
-                <button className={styles.btn} onClick={() => setLines([...lines, { article: "", qty: 1 }])}>+ строка</button>
+          <div className={styles.actions} style={{ marginTop: 10 }}>
+            <button className={`${styles.btn} ${styles.btnGhost}`}
+              onClick={() => setRows([...rows, { article: "", qty: 1, key: keyRef.current++ }])}>+ строка</button>
+            {dirty && (
+              <>
+                <input className={styles.noteInput} placeholder="заметка к правке (необязательно)"
+                  value={note} onChange={(e) => setNote(e.target.value)} />
                 <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={!allOk || busy === "save"} onClick={doSave}>
                   {busy === "save" ? <span className={styles.spin} /> : "Сохранить как human"}
                 </button>
-                <button className={`${styles.btn} ${styles.btnGhost}`} onClick={() => setEditing(false)}>отмена</button>
-              </div>
-            </>
-          )}
-
-          {!editing && (
-            <div className={styles.actions}>
-              {d.composition.length > 0 && d.composition.some((c) => c.match_method !== "human") && (
-                <button className={styles.btn} disabled={!!busy} onClick={confirmHuman}>
-                  {busy === "confirm" ? <span className={styles.spin} /> : "Подтвердить как human"}
-                </button>
-              )}
-              <button className={styles.btn} onClick={startEdit}>Править состав</button>
-              <button className={styles.btn} disabled={!!busy || d.agent_running} onClick={doRerun}>
-                {busy === "rerun" || d.agent_running ? <span className={styles.spin} /> : "Перепрогнать агентом"}
+                <button className={`${styles.btn} ${styles.btnGhost}`} onClick={() => { if (d) initRows(d); }}>отменить</button>
+              </>
+            )}
+            {!dirty && d.composition.length > 0 && !isHuman && (
+              <button className={styles.btn} disabled={!!busy || !allOk} onClick={doSave}>
+                {busy === "save" ? <span className={styles.spin} /> : "Подтвердить как human"}
               </button>
-              <button className={styles.btn} disabled={!!busy} onClick={doRefetch}>
-                {busy === "refetch" ? <span className={styles.spin} /> : "Перекачать снапшот"}
-              </button>
-              <button className={styles.btn} onClick={() => setTexting(!texting)}>Догрузить тексты</button>
-            </div>
-          )}
-
-          {texting && (
-            <div style={{ marginTop: 12 }}>
-              <textarea className={styles.textarea} placeholder="item specifics — вставь как скопировал со страницы"
-                value={specRaw} onChange={(e) => setSpecRaw(e.target.value)} />
-              <textarea className={styles.textarea} placeholder="description — как есть" style={{ marginTop: 8 }}
-                value={descRaw} onChange={(e) => setDescRaw(e.target.value)} />
-              <div className={styles.actions} style={{ marginTop: 8 }}>
-                <button className={`${styles.btn} ${styles.btnPrimary}`}
-                  disabled={busy === "texts" || (!specRaw.trim() && !descRaw.trim())} onClick={doTexts}>
-                  {busy === "texts" ? <span className={styles.spin} /> : "Сохранить тексты"}
+            )}
+            {!dirty && (
+              <>
+                <button className={styles.btn} disabled={!!busy || d.agent_running}
+                  onClick={act("rerun", () => rerunListing(item), "прогон запущен")}>
+                  {busy === "rerun" || d.agent_running ? <span className={styles.spin} /> : "Перепрогнать агентом"}
                 </button>
-              </div>
-            </div>
-          )}
+                <button className={styles.btn} disabled={!!busy}
+                  onClick={act("refetch", () => refetchSnapshot(item), "снапшот перекачан")}>
+                  {busy === "refetch" ? <span className={styles.spin} /> : "Перекачать снапшот"}
+                </button>
+              </>
+            )}
+          </div>
         </div>
 
-        {/* агент: вывод и наблюдения */}
+        {/* агент: комментарий и наблюдения */}
         {run && (
           <div className={styles.panel}>
             <h3 className={styles.panelTitle}>
               Агент
               {run.verdict && <span className={`${styles.pill} ${STATUS_PILL[run.verdict] || styles.pillGray}`}>{STATUS_LABEL[run.verdict] || run.verdict}</span>}
-              {run.dry_run && <span className={`${styles.pill} ${styles.pillGray}`}>сухой</span>}
             </h3>
             {run.error && <div className={`${styles.alert} ${styles.alertRed}`}>{run.error}</div>}
             {run.comment && <div className={styles.comment}>{run.comment}</div>}
-            {(run.positions || []).filter((p) => !p.part_id).length > 0 && (
-              <div className={`${styles.alert} ${styles.alertAmber}`}>
-                прочитано, но не в каталоге:{" "}
-                {(run.positions || []).filter((p) => !p.part_id).map((p) => (
-                  <button key={p.article_read} className={styles.copy}
-                    onClick={() => copy(p.canonical || p.article_read)}>{p.canonical || p.article_read}</button>
-                ))}
-                {" "}— заведи детали в smart, воркер закроет листинг сам (≤ часа) или жми «Перепрогнать».
-              </div>
-            )}
             {(run.near_articles || []).length > 0 && (
               <details className={styles.details}>
                 <summary>ещё видел ({(run.near_articles || []).length}) — и почему не взял</summary>
@@ -328,40 +335,34 @@ function Inner({ item }: { item: string }) {
             <div className={styles.metaLine} style={{ marginTop: 10 }}>
               <span>{run.model}</span>
               {run.prompt_tokens != null && <span>{run.prompt_tokens} tok in / {run.completion_tokens} out</span>}
-              <span>прогонов всего: {d.runs.length}</span>
+              <span>прогонов: {d.runs.length}</span>
             </div>
           </div>
         )}
 
-        {/* тексты снапшота */}
+        {/* ── Тексты: всегда видны, dblclick — правка ── */}
         <div className={styles.panel}>
           <h3 className={styles.panelTitle}>Тексты листинга
             {snap && <span className={`${styles.pill} ${snap.status === "done" ? styles.pillGreen : styles.pillGray}`}>{String(snap.status)}{snap.source ? ` · ${snap.source}` : ""}</span>}
           </h3>
-          {!snap && <div className={styles.comment}>снапшота нет</div>}
           {snap?.catalog_url && (
-            <div className={styles.comment}>
+            <div className={styles.comment} style={{ marginBottom: 8 }}>
               делистнут — подсказка: <a href={String(snap.catalog_url)} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>каталожная страница eBay ↗</a>
             </div>
           )}
-          {snap?.specifics && (
-            <details className={styles.details}>
-              <summary>item specifics</summary>
-              <div className={styles.detailsBody}>{JSON.stringify(snap.specifics, null, 2)}</div>
-            </details>
-          )}
-          {Boolean(snap?.specifics_raw) && (
-            <details className={styles.details}>
-              <summary>specifics (ручная догрузка)</summary>
-              <div className={styles.detailsBody}>{String(snap!.specifics_raw)}</div>
-            </details>
-          )}
-          {Boolean(snap?.description) && (
-            <details className={styles.details}>
-              <summary>description</summary>
-              <div className={styles.detailsBody}>{String(snap!.description)}</div>
-            </details>
-          )}
+          {snap?.specifics ? (
+            <div className={styles.textBlock}>
+              <div className={styles.formLabel}>item specifics (со страницы)</div>
+              <div className={styles.textView}>{Object.entries(snap.specifics as unknown as Record<string, string>).map(([k, v]) => `${k}: ${v}`).join("\n")}</div>
+            </div>
+          ) : null}
+          <EditableText label={snap?.specifics ? "specifics — ручная догрузка" : "item specifics"}
+            value={String(snap?.specifics_raw || "")}
+            placeholder="пусто — вставь как скопировал со страницы (двойной клик)"
+            onSave={async (v) => { await putSnapshotTexts(item, v, ""); toast("сохранено — агент перепрогонит сам"); await load(false); }} />
+          <EditableText label="description" value={String(snap?.description || "")}
+            placeholder="пусто — вставь описание со страницы (двойной клик)"
+            onSave={async (v) => { await putSnapshotTexts(item, "", v); toast("сохранено — агент перепрогонит сам"); await load(false); }} />
         </div>
       </div>
     </div>
