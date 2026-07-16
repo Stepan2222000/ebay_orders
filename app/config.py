@@ -8,7 +8,7 @@ load_dotenv()
 
 # OpenAI-совместимый прокси gpt55. Effort кодируется суффиксом имени модели
 # (cursor-gpt55(low|medium|high)) — отдельного поля reasoning прокси не требует.
-_DEFAULT_BASE_URL = "http://194.164.245.107:8317/v1"
+_DEFAULT_BASE_URL = "http://2.27.20.221:8317/v1"
 
 
 @dataclass(frozen=True)
@@ -22,7 +22,7 @@ class Settings:
     openai_api_key: str
     openai_base_url: str = _DEFAULT_BASE_URL
     ocr_model: str = "claude-opus-4-8"   # транскрибация — стадия A (Claude vision)
-    agent_model: str = "gpt-5.5"  # агент — стадия B
+    agent_model: str = "gpt-5.6-terra"  # агент — стадия B
     llm_max_tokens: int = 16000
     llm_timeout_s: float = 120.0
     ocr_max_attempts: int = 3

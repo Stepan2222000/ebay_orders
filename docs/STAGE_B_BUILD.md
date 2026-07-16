@@ -62,7 +62,7 @@
 - стрим — официальный AI SDK UIMessageStream v1, формат и список
   чанков подтверждены прямым чтением `node_modules/ai/dist/index.d.ts`
   (см. ссылки внизу);
-- модель стадии B — `openai/gpt-5.5` через OpenRouter с
+- модель стадии B — `openai/gpt-5.6-terra` через OpenRouter с
   `reasoning.effort=medium`, поведение в стриме проверено живым curl'ом;
 - стадия A не трогается.
 
@@ -272,7 +272,7 @@ curl -N -X POST http://localhost:3051/api/chat \
   https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat
 - OpenRouter streaming + tool deltas:
   https://openrouter.ai/docs/api-reference/streaming,
-  плюс живой замер на `openai/gpt-5.5` из этого репо (см. историю
+  плюс живой замер на `openai/gpt-5.6-terra` из этого репо (см. историю
   терминала перед стартом этой работы).
 - OpenRouter reasoning_details:
   https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
