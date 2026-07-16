@@ -50,7 +50,7 @@ log = logging.getLogger(__name__)
 
 DESC_CAND_CAP = 20        # кандидатов только-из-description сверх капа режем с пометкой
 DESC_TEXT_CAP = 3000
-PROMPT_REV = "v3"         # входит в отпечаток: смена промпта = новый вход
+PROMPT_REV = "v4"         # входит в отпечаток: смена промпта = новый вход
 
 SCHEMA = {
     "type": "object",
@@ -104,7 +104,7 @@ Rules:
 - Mercury/Quicksilver numbers are often written with a space before a short trailing group ("805759T 1", "88397A 1", "84-816761a 4"): the trailing 1-2 characters are PART of the number (805759T1, 88397A1, 816761A4), not a quantity — especially when the glued form appears in CATALOG CONTEXT or candidate hints. A bare digit after a P/N is almost never a quantity marker.
 - When a photo label shows an aftermarket maker's own number (Walker, Sierra, Martyr, GLM, …) while title/specifics carry the OEM number of the same part — both identify one part: pick the number that exists in CATALOG CONTEXT (usually the OEM one) and keep the other in near_articles as a cross-number.
 - contradictions: ONLY unresolved contradictions that affect which article/composition is correct (e.g. specifics MPN vs photo label disagree and you cannot justify a choice). If you resolved it with evidence — explain in note/near_articles instead, do not list here.
-- near_articles: ONLY strings that are plausibly PART NUMBERS by meaning and context (cross-numbers, alternate/OEM numbers, internal component numbers) that you did not use, each with a reason. Judge by meaning: barcodes/UPC/EAN digits, dates, years, quantities, prices, zip codes, addresses, packaging/print lot codes are NOT part numbers — omit them entirely, do not list them anywhere.
+- near_articles: ONLY strings that are plausibly PART NUMBERS by meaning and context (cross-numbers, alternate/OEM numbers, internal component numbers) that you did not use, each with a reason. Judge by meaning: barcodes/UPC/EAN digits, dates, years, quantities, prices, zip codes, addresses, packaging/print lot codes, the seller's own stock/inventory/location codes and meaningless title fragments (e.g. a leading batch code like "*NEW OEM* 0810") are NOT part numbers — omit them entirely, do not list them anywhere.
 - One lot containing N units of a part is NOT a problem — put N into that position's qty. qty_note is ONLY for the listing's own sources contradicting each other about what one lot contains (e.g. title says "pair", photos clearly show one). The buyer's order quantity ({order_qtys}) is context, not a source of conflict.
 - Write all note/why/comment/contradictions texts in Russian.
 
