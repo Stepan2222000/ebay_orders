@@ -43,7 +43,7 @@ def _ddl(host: str, user: str, pw: str) -> str:
     CREATE SCHEMA IF NOT EXISTS smart_fdw;
     CREATE SCHEMA IF NOT EXISTS brands_fdw;
 
-    IMPORT FOREIGN SCHEMA public LIMIT TO (parts, part_articles)
+    IMPORT FOREIGN SCHEMA public LIMIT TO (parts, part_articles, part_components)
         FROM SERVER smart_srv INTO smart_fdw;
     IMPORT FOREIGN SCHEMA public LIMIT TO (article_match_rules, brands, brand_aliases)
         FROM SERVER brands_srv INTO brands_fdw;

@@ -24,6 +24,19 @@ services:
     depends_on:
       - api
 
+  truth_worker:
+    image: ghcr.io/stepan2222000/ebay-orders-backend:${IMAGE_TAG:-latest}
+    container_name: ebay_orders_truth_worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TRUTH_WRITE: "${TRUTH_WRITE:-0}"
+    networks:
+      - db_default
+    command: ["python", "-m", "app", "truth-worker"]
+    depends_on:
+      - api
+
   web:
     image: ghcr.io/stepan2222000/ebay-orders-frontend:${IMAGE_TAG:-latest}
     container_name: ebay_orders_web

@@ -44,6 +44,19 @@ class Settings:
     snapshot_max_attempts: int = 3
     snapshot_reconcile_period_s: float = 10.0
 
+    # истина по артикулам (article_truth/SPEC.md §6): модель одна, без фолбэка.
+    # TRUTH_WRITE=1 — боевая запись (item_parts/статусы/карточки), иначе сухой
+    # режим (только agent_runs, dry_run=true).
+    truth_model: str = "gpt-5.6-luna"
+    truth_write: bool = False
+    truth_concurrency: int = 3
+    truth_max_attempts: int = 3           # failed-прогонов на один отпечаток
+    truth_max_photos: int = 10
+    truth_max_tokens: int = 4000
+    truth_llm_timeout_s: float = 240.0
+    truth_poll_s: float = 15.0            # быстрый цикл: листинги без прогонов
+    truth_recheck_period_s: float = 3600.0  # пересчёт отпечатков нефинальных
+
 
 def load() -> Settings:
     return Settings(
@@ -57,6 +70,8 @@ def load() -> Settings:
         worker_concurrency=int(os.environ.get("WORKER_CONCURRENCY", 10)),
         photo_concurrency=int(os.environ.get("PHOTO_CONCURRENCY", 6)),
         snapshot_concurrency=int(os.environ.get("SNAPSHOT_CONCURRENCY", 6)),
+        truth_write=os.environ.get("TRUTH_WRITE") == "1",
+        truth_concurrency=int(os.environ.get("TRUTH_CONCURRENCY", 3)),
     )
 
 

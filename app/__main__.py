@@ -12,7 +12,7 @@ from .ocr import OcrError, transcribe
 from .util import detect_mime
 from .worker import run as worker_run
 
-USAGE = "usage: python -m app {api|worker|ocr-one <file>|backfill-photos}"
+USAGE = "usage: python -m app {api|worker|truth-worker|ocr-one <file>|backfill-photos}"
 
 
 async def _ocr_one(path: str) -> int:
@@ -54,6 +54,9 @@ def main() -> None:
         uvicorn.run("app.api:app", host="0.0.0.0", port=port)
     elif cmd == "worker":
         asyncio.run(worker_run())
+    elif cmd == "truth-worker":
+        from .truth import run as truth_run
+        asyncio.run(truth_run())
     elif cmd == "ocr-one":
         if len(sys.argv) < 3:
             print(USAGE, file=sys.stderr)
