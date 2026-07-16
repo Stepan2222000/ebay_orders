@@ -52,7 +52,7 @@ export default function TruthLayout({ children }: { children: React.ReactNode })
         <div className={styles.spacer} />
         <Link href="/" className={styles.backlink}>← Заказы</Link>
       </header>
-      <div className={styles.content}>{children}</div>
+      <div className={styles.content} id="truth-scroll">{children}</div>
     </div>
   );
 }
