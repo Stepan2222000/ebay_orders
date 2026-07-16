@@ -14,9 +14,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.db import close, pool  # noqa: E402
-from app.truth import run_listing  # noqa: E402
+from app.truth import _should_run, run_listing  # noqa: E402
 
-CONCURRENCY = 3
+CONCURRENCY = 10
 SNAP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rerun_finals_before.json")
 
 
@@ -39,8 +39,14 @@ async def main() -> None:
     logging.basicConfig(level=logging.WARNING)
     p = await pool()
 
-    before = await snapshot(p)
-    json.dump(before, open(SNAP, "w"), ensure_ascii=False)
+    # снимок «до» берём один раз — рестарт скрипта не должен его затирать,
+    # иначе дифф потеряет уже перепрогнанные листинги
+    if os.path.exists(SNAP):
+        before = json.load(open(SNAP))
+        print("снимок «до» уже есть — использую его (резюм)")
+    else:
+        before = await snapshot(p)
+        json.dump(before, open(SNAP, "w"), ensure_ascii=False)
 
     finals = [r["item_number"] for r in await p.fetch("""
         SELECT DISTINCT item_number FROM item_parts
@@ -54,6 +60,12 @@ async def main() -> None:
     async def one(num: str) -> None:
         nonlocal done
         async with sem:
+            async with p.acquire() as conn:
+                need = await _should_run(conn, num, write=True)
+            if not need:                     # уже есть done-прогон текущего отпечатка
+                done += 1
+                print(f"[{done}/{len(finals)}] {num}: skip (уже v4)", flush=True)
+                return
             res = await run_listing(num, write=True)
             done += 1
             v = res["verdict"] if res else "?"

@@ -158,7 +158,19 @@ export interface DryRun {
   affected_nonfinal: string[];
 }
 
+export interface ListingRow {
+  item_number: string;
+  item_title: string;
+  match_status: string;
+  match_note: string | null;
+  composition: string | null;
+  methods: string[] | null;
+  photo?: string | null;
+  age_s?: number | null;
+}
+
 export const fetchQueue = () => j<Queue>("/truth/queue");
+export const fetchAllListings = () => j<{ listings: ListingRow[] }>("/truth/listings");
 export const fetchBadge = () => j<{ open: number }>("/truth/badge");
 export const fetchListing = (n: string) => j<Listing>(`/truth/listing/${n}`);
 export const rerunListing = (n: string) =>

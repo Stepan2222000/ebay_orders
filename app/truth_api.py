@@ -127,6 +127,31 @@ async def queue():
     }
 
 
+@truth_api.get("/listings")
+async def listings_all():
+    """Все листинги (включая успешные) — для режима «Все» в разборе."""
+    p = await pool()
+    async with p.acquire() as conn:
+        rows = [dict(r) for r in await conn.fetch("""
+            SELECT i.item_number, i.item_title, i.match_status, i.match_note,
+                   ip.composition, ip.methods,
+                   extract(epoch FROM now() - i.matched_at)::bigint AS age_s
+              FROM items i
+              LEFT JOIN LATERAL (
+                  SELECT string_agg(p2.matched_article
+                                    || CASE WHEN p2.quantity > 1
+                                            THEN '×' || p2.quantity ELSE '' END,
+                                    ' + ' ORDER BY p2.part_id)  AS composition,
+                         array_agg(DISTINCT p2.match_method)     AS methods
+                    FROM item_parts p2 WHERE p2.item_number = i.item_number
+              ) ip ON true
+             ORDER BY i.matched_at DESC NULLS LAST""")]
+        photos = await _first_photo_ids(conn, [r["item_number"] for r in rows])
+    for r in rows:
+        r["photo"] = _photo_url(r["item_number"], photos.get(r["item_number"]))
+    return {"listings": rows}
+
+
 @truth_api.get("/badge")
 async def badge():
     p = await pool()
