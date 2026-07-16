@@ -74,22 +74,30 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: SSH deploy on server
         uses: appleboy/ssh-action@v1
         env:
           IMAGE_TAG: ${{ needs.build.outputs.sha_tag }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: IMAGE_TAG
+          envs: IMAGE_TAG,GHCR_TOKEN,GHCR_USER
           script: |
             set -euo pipefail
             cd /root/ebay_orders_app
             git fetch --quiet origin main
             git reset --hard origin/main
             export IMAGE_TAG="$IMAGE_TAG"
+            # Fresh registry login every deploy — the manually stored token on
+            # the server was a 1h ghs_ that expired and broke pulls (denied).
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
             docker compose pull
             docker compose up -d --remove-orphans
             docker image prune -f
