@@ -31,6 +31,7 @@ from .config import settings
 from .db import close, dump_schema_text, pool
 from .listener import PgFanout
 from .photos import delete_manual_photo, store_manual_photo
+from .snapshots import refetch_now
 from .prompt import SYSTEM_PROMPT_STAGE_B
 from .stream import SSE_HEADERS, sse
 from .util import detect_mime, sha256
@@ -652,6 +653,49 @@ async def delete_listing_photo(item_number: str, photo_id: int):
     if not await delete_manual_photo(item_number, photo_id):
         raise HTTPException(404, "не найдено или не ручное фото")
     return {"deleted": photo_id}
+
+
+# ─── Снапшот текстов листинга (article_truth/SPEC.md §5) ────────────────────
+
+@api.get("/listings/{item_number}/snapshot")
+async def get_snapshot(item_number: str):
+    row = await (await pool()).fetchrow(
+        "SELECT * FROM item_snapshots WHERE item_number = $1", item_number
+    )
+    if row is None:
+        raise HTTPException(404, "снапшота нет")
+    return dict(row)
+
+
+@api.put("/listings/{item_number}/snapshot")
+async def upsert_snapshot_texts(item_number: str, request: Request):
+    """Ручная догрузка текстов сырьём (specifics_raw и/или description) —
+    как скопировано, без парсинга. Разрешена и поверх авто-снапшота:
+    помечается source='manual', авто-поля (title/specifics) не трогаются."""
+    body = await request.json()
+    specifics_raw = (body.get("specifics_raw") or "").strip() or None
+    description = (body.get("description") or "").strip() or None
+    if specifics_raw is None and description is None:
+        raise HTTPException(400, "нужно хотя бы одно из: specifics_raw, description")
+    row = await (await pool()).fetchrow(
+        """INSERT INTO item_snapshots (item_number, status, source, specifics_raw, description)
+           VALUES ($1, 'done', 'manual', $2, $3)
+           ON CONFLICT (item_number) DO UPDATE
+              SET status = 'done', source = 'manual',
+                  specifics_raw = COALESCE(EXCLUDED.specifics_raw, item_snapshots.specifics_raw),
+                  description  = COALESCE(EXCLUDED.description,  item_snapshots.description),
+                  last_error = NULL, updated_at = now()
+           RETURNING *""",
+        item_number, specifics_raw, description,
+    )
+    return dict(row)
+
+
+@api.post("/listings/{item_number}/snapshot/refetch")
+async def refetch_snapshot(item_number: str):
+    """«Перекачать» снапшот: сброс и немедленный повторный PDP-фетч
+    с пересверкой титула. Отвечает финальной строкой снапшота."""
+    return await refetch_now(item_number)
 
 
 app.include_router(api)

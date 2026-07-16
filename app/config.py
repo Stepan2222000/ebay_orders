@@ -38,6 +38,12 @@ class Settings:
     manual_photo_bucket: str = "ebay-orders-my-photos"
     manual_photo_max_dim: int = 1600  # кап по длинной стороне
 
+    # снапшоты текстов листинга (article_truth/SPEC.md §5): конкуренция PDP-фетчей,
+    # потолок ретраев транзиента, период отложенной сверки титулов в воркере
+    snapshot_concurrency: int = 6
+    snapshot_max_attempts: int = 3
+    snapshot_reconcile_period_s: float = 10.0
+
 
 def load() -> Settings:
     return Settings(
@@ -50,6 +56,7 @@ def load() -> Settings:
         openai_base_url=os.environ.get("OPENAI_BASE_URL") or _DEFAULT_BASE_URL,
         worker_concurrency=int(os.environ.get("WORKER_CONCURRENCY", 10)),
         photo_concurrency=int(os.environ.get("PHOTO_CONCURRENCY", 6)),
+        snapshot_concurrency=int(os.environ.get("SNAPSHOT_CONCURRENCY", 6)),
     )
 
 

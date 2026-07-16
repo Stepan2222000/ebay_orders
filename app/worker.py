@@ -1,13 +1,17 @@
 """Воркер.
 
-Единственная задача — стадия A: забирает скриншоты со статусом ocr_status='pending',
+Главная задача — стадия A: забирает скриншоты со статусом ocr_status='pending',
 отдаёт vision-модели, пишет raw_ocr и переводит снимок в 'done' (или 'failed').
+После OCR инлайн и best-effort: фото товаров (photos) и снапшоты текстов
+листинга (snapshots, article_truth/SPEC.md §5); плюс периодическая отложенная
+сверка титулов (reconcile_titles — снапшот готов раньше items-строки).
 
 Стадия B живёт в HTTP-handler'е POST /api/chat и стартует только по сообщению
 пользователя. Воркер о ней ничего не знает.
 """
 import asyncio
 import logging
+import time
 
 import asyncpg
 from openai import AsyncOpenAI
@@ -16,6 +20,7 @@ from .config import settings
 from .db import pool
 from .ocr import OcrError, transcribe
 from .photos import ensure_ebay_photos
+from .snapshots import ensure_snapshots, reconcile_titles_safe
 
 log = logging.getLogger(__name__)
 
@@ -81,11 +86,12 @@ async def _process(client: AsyncOpenAI, sha: bytes, image_bytes: bytes, mime: st
         obs.get("order_number"),
     )
 
-    # Фото товаров — инлайн в пайплайне, по распознанным номерам объявлений.
-    # Best-effort: ensure_ebay_photos сам не бросает, OCR-результат уже закоммичен.
+    # Фото и снапшоты текстов — инлайн в пайплайне, по распознанным номерам
+    # объявлений. Best-effort: оба сами не бросают, OCR-результат уже закоммичен.
     nums = [it.get("item_number") for it in (obs.get("items") or []) if it.get("item_number")]
     if nums:
         await ensure_ebay_photos(nums)
+        await ensure_snapshots(nums)
 
 
 async def run() -> None:
@@ -97,6 +103,7 @@ async def run() -> None:
     log.info("worker start; ocr_concurrency=%d", n)
 
     running: set[asyncio.Task] = set()
+    last_reconcile = 0.0
 
     async with AsyncOpenAI(
         base_url=settings.openai_base_url,
@@ -129,5 +136,12 @@ async def run() -> None:
                     log.warning("worker claim failed: %s; retrying", e)
                     await asyncio.sleep(2.0)
                     continue
+
+            # Отложенная сверка титулов: снапшот успевает раньше save_order,
+            # поэтому пары «снапшот done × items-строка есть» добираем периодически.
+            now = time.monotonic()
+            if now - last_reconcile >= settings.snapshot_reconcile_period_s:
+                last_reconcile = now
+                await reconcile_titles_safe()
 
             await asyncio.sleep(settings.worker_idle_sleep_s)
