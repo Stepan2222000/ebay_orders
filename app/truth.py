@@ -322,10 +322,17 @@ async def apply_truth(conn, item_number: str, verdict: str, positions: list[dict
                       ans: dict) -> None:
     """Запись истины (вызывать внутри транзакции). Human-строки неприкосновенны —
     их наличие здесь означает гонку с ручной правкой: не пишем, карточка."""
-    human = await conn.fetchval(
-        "SELECT EXISTS(SELECT 1 FROM item_parts WHERE item_number = $1 "
-        "AND match_method = 'human')", item_number)
-    if human:
+    human_rows = await conn.fetch(
+        "SELECT part_id, quantity FROM item_parts WHERE item_number = $1 "
+        "AND match_method = 'human'", item_number)
+    if human_rows:
+        agent_agg: dict[str, int] = {}
+        for p in positions:
+            if p.get("part_id"):
+                agent_agg[p["part_id"]] = agent_agg.get(p["part_id"], 0) + max(1, p["qty"])
+        if verdict == "linked" and agent_agg == {r["part_id"]: r["quantity"]
+                                                 for r in human_rows}:
+            return                      # агент согласен с human — не шумим
         await _open_card(conn, "human_disagreement", item_number,
                          {"verdict": verdict,
                           "positions": [{k: p.get(k) for k in
@@ -516,6 +523,9 @@ async def run() -> None:
                 now = time.monotonic()
                 if now - last_recheck >= settings.truth_recheck_period_s:
                     last_recheck = now
+                    # правила могли поправить из UI — кеш процесса обновляем,
+                    # иначе отпечатки не заметят изменения
+                    await get_rules(conn, refresh=True)
                     nums += [r["item_number"] for r in await conn.fetch(_RECHECK_SQL)]
             queued = {t.get_name() for t in running}
             for num in dict.fromkeys(nums):

@@ -32,6 +32,7 @@ from .db import close, dump_schema_text, pool
 from .listener import PgFanout
 from .photos import delete_manual_photo, store_manual_photo
 from .snapshots import refetch_now
+from .truth_api import truth_api
 from .prompt import SYSTEM_PROMPT_STAGE_B
 from .stream import SSE_HEADERS, sse
 from .util import detect_mime, sha256
@@ -699,3 +700,4 @@ async def refetch_snapshot(item_number: str):
 
 
 app.include_router(api)
+app.include_router(truth_api)

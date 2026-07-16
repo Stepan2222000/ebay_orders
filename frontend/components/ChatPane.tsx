@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import type { UIMessage } from "ai";
@@ -144,6 +145,9 @@ function ChatInner({
           <MatchBacklogPill />
         </div>
         <div className={styles.headerActions}>
+          <Link href="/truth" className={styles.resetBtn} style={{ textDecoration: "none" }}>
+            Истина →
+          </Link>
           <ThemeToggle />
           <button
             type="button"

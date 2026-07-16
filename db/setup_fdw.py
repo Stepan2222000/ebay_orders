@@ -45,8 +45,14 @@ def _ddl(host: str, user: str, pw: str) -> str:
 
     IMPORT FOREIGN SCHEMA public LIMIT TO (parts, part_articles, part_components)
         FROM SERVER smart_srv INTO smart_fdw;
-    IMPORT FOREIGN SCHEMA public LIMIT TO (article_match_rules, brands, brand_aliases)
+    IMPORT FOREIGN SCHEMA public LIMIT TO (article_match_rules, brands, brand_aliases, rule_audit)
         FROM SERVER brands_srv INTO brands_fdw;
+
+    -- запись в rule_audit через FDW: identity-колонку из локального маппинга
+    -- убираем (remote проставит сам), дефолт created_at делаем локальным —
+    -- иначе postgres_fdw шлёт NULL и ловит NOT NULL/identity-ошибки.
+    ALTER FOREIGN TABLE brands_fdw.rule_audit DROP COLUMN id;
+    ALTER FOREIGN TABLE brands_fdw.rule_audit ALTER COLUMN created_at SET DEFAULT now();
     """
 
 
