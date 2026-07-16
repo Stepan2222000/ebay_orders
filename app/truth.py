@@ -340,6 +340,15 @@ async def apply_truth(conn, item_number: str, verdict: str, positions: list[dict
         "DELETE FROM item_parts WHERE item_number = $1 "
         "AND match_method IN ('regex_exact', 'agent')", item_number)
 
+    if verdict != "conflict":
+        # причина снята новым прогоном — открытая конфликт-карточка закрывается сама
+        await conn.execute(
+            """UPDATE review_cards
+                  SET status = 'resolved', resolved_at = now(),
+                      resolution = 'закрыт новым прогоном агента (вердикт: ' || $2 || ')'
+                WHERE kind = 'contradiction' AND item_number = $1 AND status = 'open'""",
+            item_number, verdict)
+
     if verdict == "linked":
         agg: dict[str, dict] = {}
         for p in positions:
