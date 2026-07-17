@@ -389,11 +389,19 @@ async def put_composition(item_number: str, request: Request):
                       AND kind IN ('contradiction', 'human_disagreement')""",
                 item_number)
 
-            # пример: только если правка реально меняет истину агента/прежнюю
-            agent_agg = {r["part_id"]: r["quantity"] for r in prior
-                         if r["match_method"] in ("agent", "regex_exact")}
+            # Пример — только когда human-состав реально отличается от
+            # ПРОЧИТАННОГО агентом. Подтверждение прочитанного как есть
+            # (например, закрытие конфликта «согласен с агентом») — штатный
+            # разбор, не материал для правки правил/промпта.
+            read_agg: dict[str, int] = {}
+            for pp in (run["positions"] or []) if run else []:
+                if pp.get("part_id"):
+                    read_agg[pp["part_id"]] = (read_agg.get(pp["part_id"], 0)
+                                               + max(1, pp.get("qty") or 1))
+            read_unresolved = bool(run) and any(
+                not pp.get("part_id") for pp in (run["positions"] or []))
             human_agg = {pid: a["qty"] for pid, a in agg.items()}
-            changed = agent_agg != human_agg or (run and run["verdict"] != "linked")
+            changed = bool(run) and (human_agg != read_agg or read_unresolved)
             if changed:
                 example_kind = await _classify_example(conn, resolved, run)
                 await conn.execute(

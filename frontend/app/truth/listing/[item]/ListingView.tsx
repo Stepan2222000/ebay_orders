@@ -314,7 +314,9 @@ function Inner({ item }: { item: string }) {
                 <button className={`${styles.btn} ${styles.btnGhost}`} onClick={() => { if (d) initRows(d); }}>отменить</button>
               </>
             )}
-            {!dirty && d.composition.length > 0 && !isHuman && (
+            {/* видна и при незаписанной истине (conflict и т.п.): «согласен с
+                прочитанным — записать как есть», активна когда все строки зелёные */}
+            {!dirty && filled.length > 0 && !isHuman && (
               <button className={styles.btn} disabled={!!busy || !allOk} onClick={doSave}>
                 {busy === "save" ? <span className={styles.spin} /> : "Подтвердить как human"}
               </button>
