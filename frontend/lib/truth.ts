@@ -80,6 +80,7 @@ export interface AgentRun {
   completion_tokens: number | null;
   created_at: string;
   finished_at: string | null;
+  no_llm?: boolean;
 }
 
 export interface Card {
@@ -175,6 +176,9 @@ export const fetchBadge = () => j<{ open: number }>("/truth/badge");
 export const fetchListing = (n: string) => j<Listing>(`/truth/listing/${n}`);
 export const rerunListing = (n: string) =>
   j<{ started: boolean }>(`/truth/listing/${n}/rerun`, { method: "POST", body: "{}" });
+export const recheckCatalog = (n: string) =>
+  j<{ applicable: boolean; reason?: string; verdict?: string; was?: string; missing?: string[] }>(
+    `/truth/listing/${n}/recheck-catalog`, { method: "POST", body: "{}" });
 export const resolvePreview = (lines: { article: string; qty: number }[]) =>
   j<{ lines: ResolvedLine[] }>("/truth/resolve", { method: "POST", body: JSON.stringify({ lines }) });
 export const saveComposition = (n: string, lines: { article: string; qty: number }[], note?: string) =>

@@ -144,6 +144,18 @@ def _http_client() -> httpx.AsyncClient:
 
 # ─── Сбор входа и отпечаток ──────────────────────────────────────────────────
 
+def _fingerprint(inp: dict, *, catalog: str | None = None) -> str:
+    """Отпечаток входа. catalog-override — детекция «менялся только каталог»
+    (SPEC §6): отпечаток свежего входа со СТАРЫМ каталожным контекстом совпал
+    со старым отпечатком ⇒ чтение-вход не менялся, применим перерешив без LLM."""
+    d = {k: inp[k] for k in ("title", "specifics", "description", "qtys", "candidates")}
+    d["catalog"] = inp["catalog"] if catalog is None else catalog
+    d |= {"photo_hashes": [p["url_hash"] for p in inp["photos"]],
+          "model": settings.truth_model, "prompt_rev": PROMPT_REV}
+    return hashlib.sha256(json.dumps(
+        d, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
 async def gather_input(conn, item_number: str) -> dict | None:
     """Полный вход агента для листинга. None — листинг не существует."""
     item = await conn.fetchrow(
@@ -230,11 +242,7 @@ async def gather_input(conn, item_number: str) -> dict | None:
         "dropped_desc_candidates": dropped,
         "catalog": "\n".join(catalog_lines) or "(no candidates matched catalog)",
     }
-    inp["fingerprint"] = hashlib.sha256(json.dumps(
-        {k: inp[k] for k in ("title", "specifics", "description", "qtys", "candidates", "catalog")}
-        | {"photo_hashes": [p["url_hash"] for p in photos],
-           "model": settings.truth_model, "prompt_rev": PROMPT_REV},
-        ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    inp["fingerprint"] = _fingerprint(inp)
     return inp
 
 
@@ -451,6 +459,59 @@ async def run_listing(item_number: str, *, write: bool) -> dict | None:
             "lot_kind": ans["lot_kind"], "run_id": run_id}
 
 
+async def redecide_listing(item_number: str, *, write: bool) -> dict:
+    """Перерешив без LLM (SPEC §6): чтение старое, решение свежее.
+
+    Применим, когда со времени последнего done-прогона изменился ТОЛЬКО
+    каталожный контекст («агент читает — код решает»: пополнение каталога не
+    меняет прочитанного, перечитывать лот LLM-ом незачем). Пишет обычную
+    done-строку прогона с новым отпечатком — идемпотентность, часовой пересчёт
+    и авто-закрытие карточек работают без изменений."""
+    p = await pool()
+    async with p.acquire() as conn:
+        async with conn.transaction():
+            inp = await gather_input(conn, item_number)
+            if inp is None:
+                return {"applicable": False, "reason": "no_input"}
+            run = await conn.fetchrow(
+                """SELECT id, input_fingerprint, input_context, raw_response, verdict, model
+                     FROM agent_runs
+                    WHERE item_number = $1 AND status = 'done' AND NOT dry_run
+                    ORDER BY created_at DESC LIMIT 1""", item_number)
+            if run is None:
+                return {"applicable": False, "reason": "no_run"}
+            if inp["fingerprint"] == run["input_fingerprint"]:
+                return {"applicable": False, "reason": "unchanged",
+                        "verdict": run["verdict"]}
+            old_catalog = (run["input_context"] or {}).get("catalog")
+            if (old_catalog is None
+                    or _fingerprint(inp, catalog=old_catalog) != run["input_fingerprint"]):
+                return {"applicable": False, "reason": "reading_changed"}
+
+            ans = run["raw_response"]
+            verdict, positions = await postprocess(conn, ans)
+            if write:
+                await apply_truth(conn, item_number, verdict, positions, ans)
+            await conn.execute(
+                """INSERT INTO agent_runs(item_number, input_fingerprint, model, status,
+                                          dry_run, raw_response, positions, near_articles,
+                                          contradictions, qty_note, verdict, input_context,
+                                          finished_at)
+                   VALUES ($1, $2, $3, 'done', $4, $5, $6, $7, $8, $9, $10, $11, now())""",
+                item_number, inp["fingerprint"], run["model"], not write,
+                ans, positions, ans["near_articles"], ans["contradictions"], ans["qty_note"],
+                verdict,
+                {"candidates": inp["candidates"], "catalog": inp["catalog"],
+                 "n_photos": len(inp["photos"]), "qtys": inp["qtys"],
+                 "redecided_from_run": run["id"]})
+            missing = [q["canonical"] or q["article_read"]
+                       for q in positions if not q["part_id"]]
+            log.info("truth %s: перерешив без LLM — %s (по чтению прогона %d, write=%s)",
+                     item_number, verdict, run["id"], write)
+            return {"applicable": True, "verdict": verdict, "was": run["verdict"],
+                    "missing": missing}
+
+
 # ─── Очередь ─────────────────────────────────────────────────────────────────
 
 _ELIGIBLE_SQL = """
@@ -524,7 +585,12 @@ async def run() -> None:
             p = await pool()
             async with p.acquire() as conn:
                 need = await _should_run(conn, num, write=write)
-            if need:
+            if not need:
+                return
+            # сначала дешёвый перерешив (менялся только каталог — без LLM);
+            # LLM — только когда менялось само чтение-вход
+            r = await redecide_listing(num, write=write)
+            if not r["applicable"] and r["reason"] != "unchanged":
                 await run_listing(num, write=write)
 
     while True:

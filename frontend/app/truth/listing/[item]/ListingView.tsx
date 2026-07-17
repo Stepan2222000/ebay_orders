@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ageText, fetchListing, photoSrc, putSnapshotTexts, refetchSnapshot,
+  ageText, fetchListing, photoSrc, putSnapshotTexts, recheckCatalog, refetchSnapshot,
   rerunListing, resolveCard, resolvePreview, saveComposition,
   STATUS_LABEL, type Listing, type ResolvedLine, type RunPosition,
 } from "@/lib/truth";
@@ -159,6 +159,28 @@ function Inner({ item }: { item: string }) {
     setBusy(null);
   };
 
+  // перерешив без LLM (SPEC §6): «завёл деталь в smart → проверил» — мгновенно
+  const doRecheck = async () => {
+    setBusy("recheck");
+    try {
+      const r = await recheckCatalog(item);
+      if (!r.applicable) {
+        toast(r.reason === "unchanged" ? "вход не менялся — вердикт прежний"
+          : r.reason === "reading_changed" ? "менялся не только каталог — нужен полный перепрогон агентом"
+          : "нет прочитанного состава — только полный прогон агентом");
+      } else if (r.verdict === "linked") {
+        toast("✓ всё нашлось в каталоге — linked");
+      } else if (r.verdict === "not_in_catalog") {
+        toast(`каталог всё ещё не знает: ${(r.missing || []).join(", ")}`);
+      } else {
+        toast(`вердикт: ${STATUS_LABEL[r.verdict || ""] || r.verdict}`);
+      }
+      const data = await load(false);
+      if (data && !dirty) initRows(data);
+    } catch (e) { toast(`${e}`); }
+    setBusy(null);
+  };
+
   return (
     <div className={styles.cardGrid}>
       {/* ── Фото ── */}
@@ -299,6 +321,13 @@ function Inner({ item }: { item: string }) {
             )}
             {!dirty && (
               <>
+                {run && run.status === "done" && !run.dry_run
+                  && !d.composition.some((c) => c.match_method !== "regex_exact") && (
+                  <button className={styles.btn} disabled={!!busy || d.agent_running}
+                    onClick={doRecheck} title="перерешив по свежему каталогу — мгновенно, без LLM">
+                    {busy === "recheck" ? <span className={styles.spin} /> : "Проверить каталог"}
+                  </button>
+                )}
                 <button className={styles.btn} disabled={!!busy || d.agent_running}
                   onClick={act("rerun", () => rerunListing(item), "прогон запущен")}>
                   {busy === "rerun" || d.agent_running ? <span className={styles.spin} /> : "Перепрогнать агентом"}
@@ -334,6 +363,7 @@ function Inner({ item }: { item: string }) {
             )}
             <div className={styles.metaLine} style={{ marginTop: 10 }}>
               <span>{run.model}</span>
+              {run.no_llm && <span>без LLM · перерешив по чтению прежнего прогона</span>}
               {run.prompt_tokens != null && <span>{run.prompt_tokens} tok in / {run.completion_tokens} out</span>}
               <span>прогонов: {d.runs.length}</span>
             </div>

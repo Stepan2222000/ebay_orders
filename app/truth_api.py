@@ -21,7 +21,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from .db import pool
 from .matching import extract_candidates, get_rules
-from .truth import run_listing
+from .truth import redecide_listing, run_listing
 
 log = logging.getLogger(__name__)
 
@@ -199,7 +199,8 @@ async def listing(item_number: str):
             SELECT id, status, dry_run, verdict, positions, near_articles,
                    contradictions, qty_note, raw_response->>'comment' AS comment,
                    raw_response->>'lot_kind' AS lot_kind, model, error,
-                   prompt_tokens, completion_tokens, created_at, finished_at
+                   prompt_tokens, completion_tokens, created_at, finished_at,
+                   (input_context ? 'redecided_from_run') AS no_llm
               FROM agent_runs WHERE item_number = $1
              ORDER BY created_at DESC LIMIT 5""", item_number)]
         cards = [dict(r) for r in await conn.fetch("""
@@ -235,6 +236,21 @@ async def rerun(item_number: str):
     _rerunning.add(item_number)
     asyncio.create_task(_bg())
     return {"started": True}
+
+
+@truth_api.post("/listing/{item_number}/recheck-catalog")
+async def recheck_catalog(item_number: str):
+    """Перерешив без LLM (SPEC §6): «завёл деталь в smart → проверил» —
+    мгновенно и бесплатно. Полный прогон остаётся для изменений чтения-входа."""
+    if item_number in _rerunning:
+        raise HTTPException(409, "идёт полный прогон агента")
+    p = await pool()
+    final = await p.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM item_parts WHERE item_number = $1 "
+        "AND match_method IN ('agent', 'human'))", item_number)
+    if final:
+        raise HTTPException(409, "истина финальна — перерешив не нужен")
+    return await redecide_listing(item_number, write=True)
 
 
 # ─── Ручной состав (human) ───────────────────────────────────────────────────
