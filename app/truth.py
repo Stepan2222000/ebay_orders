@@ -50,7 +50,12 @@ log = logging.getLogger(__name__)
 
 DESC_CAND_CAP = 20        # кандидатов только-из-description сверх капа режем с пометкой
 DESC_TEXT_CAP = 3000
-PROMPT_REV = "v4"         # входит в отпечаток: смена промпта = новый вход
+PROMPT_REV = "v5"         # аудит: пишется в input_context прогона
+# Салт отпечатка ЗАМОРОЖЕН (решение 17.07): правка промпта сама по себе не
+# перепрогоняет уже обработанное — новый промпт применяется только при реальном
+# изменении входа, у новых листингов и при ручном перепрогоне. Массовый
+# перепрогон на новый промпт — осознанное действие (db/rerun_finals.py).
+_FP_PROMPT_SALT = "v4"
 
 SCHEMA = {
     "type": "object",
@@ -97,9 +102,10 @@ TASK: from the listing photos and texts below, determine which part number(s) we
 
 Rules:
 - Every position needs an article read from an actual source (label on photo, title, description, item specifics). Never invent numbers.
-- A KIT is one product sold as a set (one box/package): output ONE position with the kit's own article. Numbers of its internal components are NOT separate positions.
+- A KIT is one product sold as a set: output ONE position with the kit's own article. Numbers of its internal components are NOT separate positions.
 - A BUNDLE is several independent parts sold together: one position per part with its qty.
-- Sellers list cross-numbers and compatible numbers; those are the same single part — pick the number best supported by photo labels, else by specifics/title.
+- Sellers list cross-numbers and compatible numbers; those are the same single part — record the form the MANUFACTURER physically put on the part itself or its factory label/box; numbers added by the seller (handwriting, price stickers, title, description) are weaker evidence for which cross-form to record and go to near_articles. This only chooses among cross-numbers of the SAME part — never record an unrelated number just because it appears on a photo.
+- COMPLEX CASE — set plus its own component: the lot contains a main part, and a number that CATALOG CONTEXT declares a component of that part's set ("KIT containing") is also visible on THIS listing's photos or in its texts. Whether that component is included in the set or is an extra unit is decided ONLY by an explicit statement in the listing texts ("hub kit included", "comes with ..."): then output ONE position for the set. Without such a statement you MUST output one position for the set AND add a contradiction naming this ambiguity (set with component included vs set + extra component) — a human will resolve it. You MUST NOT treat the following as proof of inclusion: the catalog "KIT containing" line, "compatible with ..." wording, the component's own box being visible on photos, or your general knowledge of how this product normally ships.
 - Photo labels are the strongest evidence. Read them carefully, character by character.
 - Mercury/Quicksilver numbers are often written with a space before a short trailing group ("805759T 1", "88397A 1", "84-816761a 4"): the trailing 1-2 characters are PART of the number (805759T1, 88397A1, 816761A4), not a quantity — especially when the glued form appears in CATALOG CONTEXT or candidate hints. A bare digit after a P/N is almost never a quantity marker.
 - When a photo label shows an aftermarket maker's own number (Walker, Sierra, Martyr, GLM, …) while title/specifics carry the OEM number of the same part — both identify one part: pick the number that exists in CATALOG CONTEXT (usually the OEM one) and keep the other in near_articles as a cross-number.
@@ -151,7 +157,7 @@ def _fingerprint(inp: dict, *, catalog: str | None = None) -> str:
     d = {k: inp[k] for k in ("title", "specifics", "description", "qtys", "candidates")}
     d["catalog"] = inp["catalog"] if catalog is None else catalog
     d |= {"photo_hashes": [p["url_hash"] for p in inp["photos"]],
-          "model": settings.truth_model, "prompt_rev": PROMPT_REV}
+          "model": settings.truth_model, "prompt_rev": _FP_PROMPT_SALT}
     return hashlib.sha256(json.dumps(
         d, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
@@ -427,7 +433,8 @@ async def run_listing(item_number: str, *, write: bool) -> dict | None:
                VALUES ($1, $2, $3, 'running', $4, $5) RETURNING id""",
             item_number, inp["fingerprint"], settings.truth_model, not write,
             {"candidates": inp["candidates"], "catalog": inp["catalog"],
-             "n_photos": len(inp["photos"]), "qtys": inp["qtys"]})
+             "n_photos": len(inp["photos"]), "qtys": inp["qtys"],
+             "prompt_rev": PROMPT_REV})
     try:
         ans, usage, model = await _call_llm(inp)
     except (APIError, httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
@@ -503,7 +510,8 @@ async def redecide_listing(item_number: str, *, write: bool) -> dict:
                 verdict,
                 {"candidates": inp["candidates"], "catalog": inp["catalog"],
                  "n_photos": len(inp["photos"]), "qtys": inp["qtys"],
-                 "redecided_from_run": run["id"]})
+                 "redecided_from_run": run["id"],
+                 "prompt_rev": (run["input_context"] or {}).get("prompt_rev")})
             missing = [q["canonical"] or q["article_read"]
                        for q in positions if not q["part_id"]]
             log.info("truth %s: перерешив без LLM — %s (по чтению прогона %d, write=%s)",
