@@ -192,8 +192,17 @@ async def listing(item_number: str):
              WHERE ip.item_number = $1 ORDER BY ip.part_id""", item_number)]
         orders = [dict(r) for r in await conn.fetch("""
             SELECT o.order_id, o.order_number, oi.item_quantity, o.delivery_status,
-                   o.delivered_date
+                   o.delivered_date, o.cancelled_at, o.cancel_note, o.user_note,
+                   o.order_total_usd,
+                   COALESCE(r.refunded, 0) AS refunded_usd,
+                   COALESCE(r.refunded, 0) >= o.order_total_usd AS full_refund,
+                   r.last_refund_date
               FROM order_items oi JOIN orders o USING (order_id)
+              LEFT JOIN LATERAL (
+                  SELECT sum(refund_amount_usd) AS refunded,
+                         max(refund_date) AS last_refund_date
+                    FROM order_refunds WHERE order_id = o.order_id
+              ) r ON true
              WHERE oi.item_number = $1 ORDER BY o.order_id""", item_number)]
         runs = [dict(r) for r in await conn.fetch("""
             SELECT id, status, dry_run, verdict, positions, near_articles,
@@ -251,6 +260,47 @@ async def recheck_catalog(item_number: str):
     if final:
         raise HTTPException(409, "истина финальна — перерешив не нужен")
     return await redecide_listing(item_number, write=True)
+
+
+# ─── Заказ: отмена и заметка (SPEC §10) ──────────────────────────────────────
+# «Отменён» — вычисляемый признак (полный refund / cancel-текст / ручная
+# пометка); эффект один — не ждём приезда. Разбор истины не меняется.
+
+@truth_api.post("/orders/{order_id}/cancel")
+async def mark_cancelled(order_id: int, request: Request):
+    body = await request.json()
+    p = await pool()
+    row = await p.fetchrow(
+        "UPDATE orders SET cancelled_at = now(), cancel_note = $2, updated_at = now() "
+        "WHERE order_id = $1 RETURNING order_number",
+        order_id, (body.get("note") or "").strip() or None)
+    if not row:
+        raise HTTPException(404, "заказ не найден")
+    return {"cancelled": row["order_number"]}
+
+
+@truth_api.delete("/orders/{order_id}/cancel")
+async def unmark_cancelled(order_id: int):
+    p = await pool()
+    row = await p.fetchrow(
+        "UPDATE orders SET cancelled_at = NULL, cancel_note = NULL, updated_at = now() "
+        "WHERE order_id = $1 RETURNING order_number", order_id)
+    if not row:
+        raise HTTPException(404, "заказ не найден")
+    return {"uncancelled": row["order_number"]}
+
+
+@truth_api.put("/orders/{order_id}/note")
+async def put_order_note(order_id: int, request: Request):
+    body = await request.json()
+    p = await pool()
+    row = await p.fetchrow(
+        "UPDATE orders SET user_note = $2, updated_at = now() "
+        "WHERE order_id = $1 RETURNING order_number",
+        order_id, (body.get("note") or "").strip() or None)
+    if not row:
+        raise HTTPException(404, "заказ не найден")
+    return {"saved": row["order_number"]}
 
 
 # ─── Ручной состав (human) ───────────────────────────────────────────────────
