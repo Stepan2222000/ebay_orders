@@ -241,7 +241,7 @@ async def rerun(item_number: str):
 
 async def _resolve_lines(conn, lines: list[dict]) -> list[dict]:
     """[{article, qty}] → резолв через гейт правил и каталог (без записи)."""
-    rules = await get_rules(conn)
+    rules = await get_rules(conn, refresh=True)  # правила правятся напрямую в БД
     out = []
     for ln in lines:
         raw = str(ln.get("article", "")).strip()
@@ -288,7 +288,7 @@ async def _classify_example(conn, resolved: list[dict], run) -> str:
     даже если внешне ошибка смысловая — без правила агент был слеп). Проходит,
     но в прогоне его не было ни в подсказках, ни в прочитанном → «not_seen».
     Был полностью доступен → «semantic»."""
-    rules = await get_rules(conn)
+    rules = await get_rules(conn, refresh=True)  # правила правятся напрямую в БД
     ctx = (run["input_context"] or {}) if run else {}
     hints = {_norm_num(c) for c in (ctx.get("candidates") or {})}
     seen: set[str] = set()
@@ -458,7 +458,7 @@ async def numbers():
     каталогу; явный мусор (агент сам пишет «штрихкод/дата») прячется."""
     p = await pool()
     async with p.acquire() as conn:
-        rules = await get_rules(conn)
+        rules = await get_rules(conn, refresh=True)  # правила правятся напрямую в БД
         rows = await conn.fetch("""
             SELECT DISTINCT ON (item_number) item_number, positions, near_articles
               FROM agent_runs WHERE status = 'done' AND dry_run = false

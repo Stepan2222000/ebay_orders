@@ -175,7 +175,9 @@ async def gather_input(conn, item_number: str) -> dict | None:
             specifics = (specifics + "\nRAW: " + snap["specifics_raw"]).strip()
         description = (snap["description"] or "")[:DESC_TEXT_CAP]
 
-    rules = await get_rules(conn)
+    # Правила правятся напрямую в БД (SPEC §8) — кеш процесса без refresh
+    # слеп к правкам до рестарта; каждый прогон стартует со свежих правил.
+    rules = await get_rules(conn, refresh=True)
     texts = {"title": title, "specifics": specifics, "description": description}
     cand_src: dict[str, set[str]] = {}
     for src, t in texts.items():
