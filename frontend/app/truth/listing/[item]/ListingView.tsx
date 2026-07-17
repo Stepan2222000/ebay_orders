@@ -1,8 +1,9 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ageText, fetchListing, photoSrc, putSnapshotTexts, recheckCatalog, refetchSnapshot,
-  rerunListing, resolveCard, resolvePreview, saveComposition,
+  ageText, fetchListing, markOrderCancelled, photoSrc, putSnapshotTexts,
+  recheckCatalog, refetchSnapshot, rerunListing, resolveCard, resolvePreview,
+  saveComposition, saveOrderNote, unmarkOrderCancelled,
   STATUS_LABEL, type Listing, type ResolvedLine, type RunPosition,
 } from "@/lib/truth";
 import { ToastProvider, useCopy, useToast } from "../../toast";
@@ -57,6 +58,54 @@ function EditableText({ label, value, placeholder, onSave, mono }: {
           onDoubleClick={() => setEditing(true)} title="двойной клик — редактировать">
           {value || placeholder}
         </div>
+      )}
+    </div>
+  );
+}
+
+/** Строка заказа: признак отмены (полный возврат / ручная пометка — SPEC §10)
+    и личная заметка «для себя» (двойной клик). Разбор истины отмена не меняет —
+    эффект только «не ждём приезда». */
+function OrderLine({ o, onChanged }: {
+  o: Listing["orders"][number]; onChanged: () => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(o.user_note || "");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { if (!editing) setDraft(o.user_note || ""); }, [o.user_note, editing]);
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    try { await fn(); await onChanged(); } finally { setBusy(false); }
+  };
+  return (
+    <div className={styles.metaLine}>
+      <span>заказ <span className={styles.mono}>{o.order_number}</span> ×{o.item_quantity}</span>
+      {o.full_refund && (
+        <span className={`${styles.pill} ${styles.pillRed}`}>
+          отменён · полный возврат ${o.refunded_usd}{o.last_refund_date ? ` от ${o.last_refund_date}` : ""}
+        </span>
+      )}
+      {!!o.cancelled_at && !o.full_refund && (
+        <span className={`${styles.pill} ${styles.pillRed}`} title={o.cancel_note || ""}>отменён вручную</span>
+      )}
+      {!o.full_refund && (o.cancelled_at
+        ? <button className={styles.copy} disabled={busy}
+            onClick={() => run(() => unmarkOrderCancelled(o.order_id))}>снять отмену</button>
+        : <button className={styles.copy} disabled={busy}
+            onClick={() => run(() => markOrderCancelled(o.order_id))}>пометить отменённым</button>)}
+      {editing ? (
+        <input className={styles.inlineInput} style={{ minWidth: 260 }} value={draft} autoFocus
+          placeholder="заметка для себя (может не приехать, приехать неполным…)"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") run(() => saveOrderNote(o.order_id, draft)).then(() => setEditing(false));
+            if (e.key === "Escape") setEditing(false);
+          }} />
+      ) : (
+        <span className={o.user_note ? undefined : styles.textEmpty}
+          onDoubleClick={() => setEditing(true)} title="двойной клик — заметка">
+          {o.user_note || "заметка…"}
+        </span>
       )}
     </div>
   );
@@ -214,10 +263,12 @@ function Inner({ item }: { item: string }) {
           <div className={styles.listingTitle}>{d.item.item_title}</div>
           <div className={styles.metaLine}>
             <button className={styles.copy} onClick={() => copy(item)}>{item}</button>
-            {d.orders.map((o) => <span key={o.order_id}>заказ {o.order_number} ×{o.item_quantity}</span>)}
             {run?.lot_kind && <span>{run.lot_kind}</span>}
             <span>{ageText(d.item.matched_at ? (Date.now() - Date.parse(d.item.matched_at)) / 1000 : null)}</span>
           </div>
+          {d.orders.map((o) => (
+            <OrderLine key={o.order_id} o={o} onChanged={async () => { await load(false); }} />
+          ))}
         </div>
 
         {/* карточки разбора */}

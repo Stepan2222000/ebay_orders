@@ -98,7 +98,13 @@ export interface Listing {
   snapshot: Record<string, unknown> | null;
   photos: { id: number; source: string; url: string }[];
   composition: CompositionRow[];
-  orders: { order_id: number; order_number: string; item_quantity: number; delivery_status: string | null; delivered_date: string | null }[];
+  orders: {
+    order_id: number; order_number: string; item_quantity: number;
+    delivery_status: string | null; delivered_date: string | null;
+    cancelled_at: string | null; cancel_note: string | null; user_note: string | null;
+    order_total_usd: number; refunded_usd: number; full_refund: boolean;
+    last_refund_date: string | null;
+  }[];
   runs: AgentRun[];
   cards: Card[];
   agent_running: boolean;
@@ -205,6 +211,16 @@ export const dryRunRule = (name: string, find_regex: string, enabled: boolean) =
 export const saveRule = (name: string, body: Partial<Rule> & { audit_note?: string }) =>
   j<{ saved: string; action: string }>(`/truth/rules/${encodeURIComponent(name)}`, {
     method: "PUT", body: JSON.stringify(body),
+  });
+export const markOrderCancelled = (id: number, note?: string) =>
+  j<{ cancelled: string }>(`/truth/orders/${id}/cancel`, {
+    method: "POST", body: JSON.stringify({ note }),
+  });
+export const unmarkOrderCancelled = (id: number) =>
+  j<{ uncancelled: string }>(`/truth/orders/${id}/cancel`, { method: "DELETE" });
+export const saveOrderNote = (id: number, note: string) =>
+  j<{ saved: string }>(`/truth/orders/${id}/note`, {
+    method: "PUT", body: JSON.stringify({ note }),
   });
 export const refetchSnapshot = (n: string) =>
   j<Record<string, unknown>>(`/listings/${n}/snapshot/refetch`, { method: "POST", body: "{}" });
