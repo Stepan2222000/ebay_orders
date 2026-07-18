@@ -44,6 +44,13 @@ export interface Queue {
   refunds: { card_id: number; order_id: number; order_number: string; payload: Record<string, unknown>; age_s: number }[];
 }
 
+export interface TransitPart {
+  part_id: string;
+  name: string | null;
+  draft: number;
+  accepted: number;
+}
+
 export interface CompositionRow {
   part_id: string;
   matched_article: string;
@@ -104,6 +111,7 @@ export interface Listing {
     cancelled_at: string | null; cancel_note: string | null; user_note: string | null;
     order_total_usd: number; refunded_usd: number; full_refund: boolean;
     last_refund_date: string | null;
+    transit: { journal: boolean; parts: TransitPart[] };
   }[];
   runs: AgentRun[];
   cards: Card[];
@@ -221,6 +229,10 @@ export const unmarkOrderCancelled = (id: number) =>
 export const saveOrderNote = (id: number, note: string) =>
   j<{ saved: string }>(`/truth/orders/${id}/note`, {
     method: "PUT", body: JSON.stringify({ note }),
+  });
+export const reduceTransit = (id: number, item_number: string, part_id: string, remove: number) =>
+  j<{ deleted: number }>(`/truth/orders/${id}/transit/reduce`, {
+    method: "POST", body: JSON.stringify({ item_number, part_id, remove }),
   });
 export const refetchSnapshot = (n: string) =>
   j<Record<string, unknown>>(`/listings/${n}/snapshot/refetch`, { method: "POST", body: "{}" });

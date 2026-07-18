@@ -57,6 +57,14 @@ class Settings:
     truth_poll_s: float = 15.0            # быстрый цикл: листинги без прогонов
     truth_recheck_period_s: float = 3600.0  # пересчёт отпечатков нефинальных
 
+    # едущие экземпляры (article_truth/SPEC.md §10): запись в parts_uchet
+    # ПРЯМЫМ подключением (FDW-запись валится на audit-триггерах, SPEC §14).
+    # transit_since — дата запуска этапа 5: авто-создание только для заказов,
+    # появившихся в базе с этой даты (старый хвост — разовый backfill руками).
+    uchet_pg_dsn: str = "postgresql://admin:Password123@parts_uchet:5432/parts_uchet"
+    transit_since: str = "2026-07-18"
+    transit_poll_s: float = 60.0
+
 
 def load() -> Settings:
     return Settings(
@@ -72,6 +80,9 @@ def load() -> Settings:
         snapshot_concurrency=int(os.environ.get("SNAPSHOT_CONCURRENCY", 6)),
         truth_write=os.environ.get("TRUTH_WRITE") == "1",
         truth_concurrency=int(os.environ.get("TRUTH_CONCURRENCY", 3)),
+        uchet_pg_dsn=os.environ.get("UCHET_PG_DSN")
+            or "postgresql://admin:Password123@parts_uchet:5432/parts_uchet",
+        transit_since=os.environ.get("TRANSIT_SINCE", "2026-07-18"),
     )
 
 
