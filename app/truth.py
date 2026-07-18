@@ -576,6 +576,9 @@ async def run() -> None:
     write = settings.truth_write
     log.info("truth worker start; model=%s write=%s concurrency=%d",
              settings.truth_model, write, settings.truth_concurrency)
+    if write:  # третья петля — едущие экземпляры (SPEC §10); в сухом режиме не пишем
+        from .transit import transit_loop
+        asyncio.create_task(transit_loop())
     sem = asyncio.Semaphore(settings.truth_concurrency)
     running: set[asyncio.Task] = set()
     last_recheck = 0.0

@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from .db import pool
 from .matching import extract_candidates, get_rules
+from .transit import transit_info, transit_reduce
 from .truth import redecide_listing, run_listing
 
 log = logging.getLogger(__name__)
@@ -204,6 +205,18 @@ async def listing(item_number: str):
                     FROM order_refunds WHERE order_id = o.order_id
               ) r ON true
              WHERE oi.item_number = $1 ORDER BY o.order_id""", item_number)]
+        # едущие экземпляры по заказам (SPEC §10) — из uchet, имена из smart
+        tinfo = await transit_info(item_number, [o["order_id"] for o in orders])
+        part_ids = sorted({p["part_id"] for t in tinfo.values() for p in t["parts"]})
+        tnames = {r["id"]: r["name"] for r in await conn.fetch(
+            "SELECT id, name FROM smart_fdw.parts WHERE id = ANY($1::text[])",
+            part_ids)} if part_ids else {}
+        for t in tinfo.values():
+            for tp in t["parts"]:
+                tp["name"] = tnames.get(tp["part_id"])
+        for o in orders:
+            o["transit"] = tinfo.get(o["order_id"], {"journal": False, "parts": []})
+
         runs = [dict(r) for r in await conn.fetch("""
             SELECT id, status, dry_run, verdict, positions, near_articles,
                    contradictions, qty_note, raw_response->>'comment' AS comment,
@@ -288,6 +301,21 @@ async def unmark_cancelled(order_id: int):
     if not row:
         raise HTTPException(404, "заказ не найден")
     return {"uncancelled": row["order_number"]}
+
+
+@truth_api.post("/orders/{order_id}/transit/reduce")
+async def reduce_transit(order_id: int, request: Request):
+    """«Приедет меньше / не приедет»: удалить N draft-едущих детали (SPEC §10).
+    Принятые защищает штатный guard uchet; журнал не трогаем — пересоздания
+    не будет (freeze)."""
+    body = await request.json()
+    item_number = str(body.get("item_number") or "")
+    part_id = str(body.get("part_id") or "")
+    remove = max(1, int(body.get("remove") or 1))
+    if not item_number or not part_id:
+        raise HTTPException(400, "item_number и part_id обязательны")
+    deleted = await transit_reduce(order_id, item_number, part_id, remove)
+    return {"deleted": deleted}
 
 
 @truth_api.put("/orders/{order_id}/note")

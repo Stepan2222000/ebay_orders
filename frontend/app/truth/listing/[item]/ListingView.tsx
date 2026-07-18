@@ -2,8 +2,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ageText, fetchListing, markOrderCancelled, photoSrc, putSnapshotTexts,
-  recheckCatalog, refetchSnapshot, rerunListing, resolveCard, resolvePreview,
-  saveComposition, saveOrderNote, unmarkOrderCancelled,
+  recheckCatalog, reduceTransit, refetchSnapshot, rerunListing, resolveCard,
+  resolvePreview, saveComposition, saveOrderNote, unmarkOrderCancelled,
   STATUS_LABEL, type Listing, type ResolvedLine, type RunPosition,
 } from "@/lib/truth";
 import { ToastProvider, useCopy, useToast } from "../../toast";
@@ -66,8 +66,8 @@ function EditableText({ label, value, placeholder, onSave, mono }: {
 /** Строка заказа: признак отмены (полный возврат / ручная пометка — SPEC §10)
     и личная заметка «для себя» (двойной клик). Разбор истины отмена не меняет —
     эффект только «не ждём приезда». */
-function OrderLine({ o, onChanged }: {
-  o: Listing["orders"][number]; onChanged: () => Promise<void>;
+function OrderLine({ o, item, onChanged }: {
+  o: Listing["orders"][number]; item: string; onChanged: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(o.user_note || "");
@@ -77,7 +77,9 @@ function OrderLine({ o, onChanged }: {
     setBusy(true);
     try { await fn(); await onChanged(); } finally { setBusy(false); }
   };
+  const transitTotal = o.transit.parts.reduce((s, p) => s + p.draft + p.accepted, 0);
   return (
+    <>
     <div className={styles.metaLine}>
       <span>заказ <span className={styles.mono}>{o.order_number}</span> ×{o.item_quantity}</span>
       {o.full_refund && (
@@ -107,7 +109,38 @@ function OrderLine({ o, onChanged }: {
           {o.user_note || "заметка…"}
         </span>
       )}
+      {o.transit.journal && (
+        <span className={`${styles.pill} ${transitTotal ? styles.pillGreen : styles.pillGray}`}>
+          едущие: {transitTotal}
+        </span>
+      )}
     </div>
+    {/* едущие экземпляры (SPEC §10): состав запечатлён, правка — удалить/уменьшить draft */}
+    {o.transit.parts.length > 0 && (
+      <div className={styles.metaLine} style={{ paddingLeft: 18 }}>
+        {o.transit.parts.map((p) => (
+          <span key={p.part_id}>
+            {p.name || p.part_id} ×{p.draft + p.accepted}
+            {p.accepted > 0 && ` (принято ${p.accepted})`}
+            {p.draft > 0 && (
+              <>
+                {" "}
+                <button className={styles.copy} disabled={busy} title="приедет на 1 меньше"
+                  onClick={() => run(() => reduceTransit(o.order_id, item, p.part_id, 1))}>−1</button>
+                <button className={styles.copy} disabled={busy} title="не приедет — убрать все черновики"
+                  onClick={() => run(() => reduceTransit(o.order_id, item, p.part_id, p.draft))}>убрать</button>
+              </>
+            )}
+          </span>
+        ))}
+      </div>
+    )}
+    {o.transit.journal && o.transit.parts.length === 0 && (
+      <div className={`${styles.metaLine} ${styles.textEmpty}`} style={{ paddingLeft: 18 }}>
+        едущие удалены вручную — пересоздания не будет
+      </div>
+    )}
+    </>
   );
 }
 
@@ -267,7 +300,8 @@ function Inner({ item }: { item: string }) {
             <span>{ageText(d.item.matched_at ? (Date.now() - Date.parse(d.item.matched_at)) / 1000 : null)}</span>
           </div>
           {d.orders.map((o) => (
-            <OrderLine key={o.order_id} o={o} onChanged={async () => { await load(false); }} />
+            <OrderLine key={o.order_id} o={o} item={item}
+              onChanged={async () => { await load(false); }} />
           ))}
         </div>
 
