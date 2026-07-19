@@ -65,6 +65,16 @@ class Settings:
     transit_since: str = "2026-07-18"
     transit_poll_s: float = 60.0
 
+    # контур 2 (SPEC §12): чтение маркировки экземпляров с наших фото.
+    # INSTANCE_TRUTH: off — петля не запускается (дефолт; первый прогон — руками
+    # частями, ворота включения за пользователем), dry — журнал без записи,
+    # write — боевой. Фото экземпляров — parts_photos (MinIO публичен).
+    instance_mode: str = "off"
+    photos_pg_dsn: str = "postgresql://admin:Password123@parts_photos:5432/parts_photos"
+    photos_minio_base: str = "http://2.27.20.221:9000/parts-photos"
+    instance_poll_s: float = 120.0
+    instance_concurrency: int = 2
+
 
 def load() -> Settings:
     return Settings(
@@ -83,6 +93,9 @@ def load() -> Settings:
         uchet_pg_dsn=os.environ.get("UCHET_PG_DSN")
             or "postgresql://admin:Password123@parts_uchet:5432/parts_uchet",
         transit_since=os.environ.get("TRANSIT_SINCE", "2026-07-18"),
+        instance_mode=os.environ.get("INSTANCE_TRUTH", "off"),
+        photos_pg_dsn=os.environ.get("PHOTOS_PG_DSN")
+            or "postgresql://admin:Password123@parts_photos:5432/parts_photos",
     )
 
 

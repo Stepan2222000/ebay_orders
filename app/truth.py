@@ -587,6 +587,9 @@ async def run() -> None:
     if write:  # третья петля — едущие экземпляры (SPEC §10); в сухом режиме не пишем
         from .transit import transit_loop
         asyncio.create_task(transit_loop())
+    if settings.instance_mode != "off":  # контур 2 (SPEC §12); ворота включения
+        from .instance_truth import instance_loop
+        asyncio.create_task(instance_loop())
     sem = asyncio.Semaphore(settings.truth_concurrency)
     running: set[asyncio.Task] = set()
     last_recheck = 0.0
